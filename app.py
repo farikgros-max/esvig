@@ -4,7 +4,6 @@ import json
 import sqlite3
 import hashlib
 import requests
-import traceback
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
@@ -281,11 +280,11 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]
     ])
 
-# ------------------ ОБРАБОТЧИКИ БОТА (все ваши, но сокращены для краткости) ------------------
+# ------------------ ОБРАБОТЧИКИ БОТА ------------------
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
-        await m.answer("🤖 Добро пожаловать в ESVIG Service! Используйте кнопки меню.", reply_markup=get_main_keyboard())
+        await m.answer("🤖 Добро пожаловать в ESVIG Service!\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\nИспользуйте кнопки меню для навигации.", reply_markup=get_main_keyboard())
 
     @dp.message(Command("admin"))
     async def cmd_admin(m: Message):
@@ -653,7 +652,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "about")
     async def about(cb: CallbackQuery):
-        await cb.message.edit_text("ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\nРаботаем с 2026 года. Без скама и хайпов.", reply_markup=get_back_keyboard())
+        await cb.message.edit_text("ℹ️ О сервисе ESVIG Service\n\nМы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\nРаботаем с 2026 года. Без скама и хайпов.", reply_markup=get_back_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "faq")
@@ -666,51 +665,41 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text("📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Telegram: @esvig_support\n• Email: support@esvig.com\n• Канал с новостями: @esvig_news\n\nОбычно отвечаем в течение 1–2 часов.", reply_markup=get_back_keyboard())
         await cb.answer()
 
-# ------------------ FLASK ПРИЛОЖЕНИЕ С ЗАЩИТОЙ ------------------
+# ------------------ FLASK СИНХРОННЫЙ ВЕБХУК (ОДИН EVENT LOOP) ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-app.config['_started'] = False
+# Создаём один event loop и будем его переиспользовать
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
+# Инициализируем бота при старте (один раз)
+loop.run_until_complete(load_channels())
+loop.run_until_complete(register_handlers(dp_instance))
+print("Бот инициализирован, вебхук готов.")
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
-    try:
-        if not app.config['_started']:
-            await load_channels()
-            await register_handlers(dp_instance)
-            app.config['_started'] = True
-            print("Бот инициализирован и обработчики загружены.")
-        
-        # Проверка секретного токена
-        secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-        if secret != SECRET_TOKEN:
-            print(f"Неверный секретный токен: {secret}")
-            return jsonify({'status': 'unauthorized'}), 401
-        
-        # Получаем данные от Telegram
-        data = request.get_json()
-        if not data:
-            return jsonify({'status': 'no data'}), 400
-        
-        update = Update(**data)
-        await dp_instance.feed_update(bot_instance, update)
-    except Exception as e:
-        print("Ошибка в вебхуке:")
-        traceback.print_exc()
-    finally:
-        # Всегда отвечаем 200, чтобы Telegram не повторял запросы
-        return jsonify({'status': 'ok'})
+def webhook():
+    # Проверка секретного токена
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+        return jsonify({'status': 'unauthorized'}), 401
+    update = Update(**request.json)
+    # Запускаем обработку в том же event loop
+    loop.run_until_complete(dp_instance.feed_update(bot_instance, update))
+    return jsonify({'status': 'ok'})
 
 @app.route('/set_webhook', methods=['GET'])
-async def set_webhook():
+def set_webhook():
     webhook_url = "https://esvig-production.up.railway.app/webhook"
     r = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
         json={"url": webhook_url, "secret_token": SECRET_TOKEN}
     )
+    print(f"Webhook set result: {r.json()}")
     return jsonify({'status': 'ok', 'result': r.json()})
 
+# Для gunicorn
 application = app
