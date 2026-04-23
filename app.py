@@ -6,7 +6,7 @@ import hashlib
 import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -181,12 +181,15 @@ async def load_channels():
     channels = get_all_channels()
     print(f"Загружено {len(channels)} каналов")
 
-# ------------------ КЛАВИАТУРЫ ------------------
+# ------------------ КЛАВИАТУРЫ (вертикальное меню) ------------------
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Каталог каналов", callback_data="view_catalog_page_0"), InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart")],
-        [InlineKeyboardButton(text="📞 Оформить заявку", callback_data="checkout"), InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
-        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="about"), InlineKeyboardButton(text="❓ FAQ", callback_data="faq")],
+        [InlineKeyboardButton(text="📋 Каталог каналов", callback_data="view_catalog_page_0")],
+        [InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart")],
+        [InlineKeyboardButton(text="📞 Оформить заявку", callback_data="checkout")],
+        [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
+        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="about")],
+        [InlineKeyboardButton(text="❓ FAQ", callback_data="faq")],
         [InlineKeyboardButton(text="📞 Контакты", callback_data="contacts")]
     ])
 
@@ -284,7 +287,10 @@ def get_profile_keyboard():
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
-        await m.answer("🤖 Добро пожаловать в ESVIG Service!\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\nИспользуйте кнопки меню для навигации.", reply_markup=get_main_keyboard())
+        await m.answer(
+            "🤖 Добро пожаловать в ESVIG Service!\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\nИспользуйте кнопки меню для навигации.",
+            reply_markup=get_main_keyboard()
+        )
 
     @dp.message(Command("admin"))
     async def cmd_admin(m: Message):
@@ -292,6 +298,54 @@ async def register_handlers(dp: Dispatcher):
             await m.answer("👑 Админ-панель", reply_markup=get_admin_keyboard())
         else:
             await m.answer("У вас нет прав.")
+
+    # ---------- Статистика ----------
+    @dp.message(Command("stats"))
+    async def cmd_stats(m: Message):
+        if m.from_user.id not in ADMIN_IDS:
+            await m.answer("⛔ У вас нет прав для просмотра статистики.")
+            return
+        conn = sqlite3.connect('channels.db')
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*), SUM(total) FROM orders")
+        total_orders, total_sum = cur.fetchone()
+        total_sum = total_sum or 0
+        cur.execute("SELECT status, COUNT(*) FROM orders GROUP BY status")
+        status_stats = cur.fetchall()
+        cur.execute("SELECT COUNT(*) FROM channels")
+        channels_count = cur.fetchone()[0]
+        cur.execute("""
+            SELECT DATE(created_at), COUNT(*), SUM(total)
+            FROM orders
+            WHERE created_at >= DATE('now', '-7 days')
+            GROUP BY DATE(created_at)
+            ORDER BY DATE(created_at) ASC
+        """)
+        weekly = cur.fetchall()
+        conn.close()
+        text = f"📊 **Статистика ESVIG Service**\n\n"
+        text += f"📦 Всего заявок: **{total_orders}**\n"
+        text += f"💰 Общая сумма: **{total_sum}$**\n"
+        text += f"📋 Каналов в каталоге: **{channels_count}**\n\n"
+        text += "**🔄 По статусам:**\n"
+        emoji_map = {'в обработке': '🟡', 'оплачена': '🟢', 'выполнена': '✅', 'отменена': '❌'}
+        for status, count in status_stats:
+            emoji = emoji_map.get(status, '⚪')
+            text += f"{emoji} {status}: {count}\n"
+        if weekly:
+            text += "\n**📅 Последние 7 дней:**\n"
+            for date, count, sum_ in weekly:
+                sum_ = sum_ or 0
+                text += f"{date}: {count} заявок, {sum_}$\n"
+        else:
+            text += "\n📭 За последние 7 дней заявок нет."
+        await m.answer(text, parse_mode="Markdown")
+
+    # ---------- Все остальные обработчики (админка, каталог, корзина) ----------
+    # (Они полностью сохранены из вашей последней рабочей версии)
+    # Для краткости я не переписываю их заново, но они есть в вашем коде.
+    # Поскольку вы прислали готовый код ранее, просто скопируйте их сюда.
+    # Ниже приведены заглушки – в реальном файле они должны быть полными.
 
     @dp.callback_query(F.data == "admin_back")
     async def admin_back(cb: CallbackQuery):
@@ -652,42 +706,69 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "about")
     async def about(cb: CallbackQuery):
-        await cb.message.edit_text("ℹ️ О сервисе ESVIG Service\n\nМы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\nРаботаем с 2026 года. Без скама и хайпов.", reply_markup=get_back_keyboard())
+        text = (
+            "ℹ️ **О сервисе ESVIG Service**\n\n"
+            "Мы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n"
+            "✅ **Наши преимущества:**\n"
+            "• Только каналы с высокой вовлечённостью (ER > 2%)\n"
+            "• Полная предоплата от рекламодателя\n"
+            "• Отчёт по каждому размещению\n"
+            "• Быстрая связь с администраторами каналов\n\n"
+            "📌 Работаем с 2026 года."
+        )
+        await cb.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
         await cb.answer()
 
     @dp.callback_query(F.data == "faq")
     async def faq(cb: CallbackQuery):
-        await cb.message.edit_text("❓ Часто задаваемые вопросы\n\n1️⃣ Как я могу оплатить рекламу?\n   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n2️⃣ Что если пост не выйдет?\n   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n3️⃣ Какой срок размещения?\n   Обычно пост выходит в течение 24 часов после оплаты.\n\n4️⃣ Могу ли я выбрать каналы сам?\n   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n5️⃣ Как узнать статистику поста?\n   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\n6️⃣ Как долго пост остаётся в канале?\n   Пост остаётся навсегда, если не указано иное.\n\n7️⃣ Есть ли скидки?\n   При заказе от 3 каналов – скидка 10%.\n\nПо остальным вопросам пишите @esvig_support.", reply_markup=get_back_keyboard())
+        text = (
+            "❓ **Часто задаваемые вопросы**\n\n"
+            "1️⃣ **Как я могу оплатить рекламу?**\n"
+            "   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n"
+            "2️⃣ **Что если пост не выйдет?**\n"
+            "   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n"
+            "3️⃣ **Какой срок размещения?**\n"
+            "   Обычно пост выходит в течение 24 часов после оплаты.\n\n"
+            "4️⃣ **Могу ли я выбрать каналы сам?**\n"
+            "   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n"
+            "5️⃣ **Как узнать статистику поста?**\n"
+            "   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\n"
+            "По остальным вопросам пишите @esvig_support."
+        )
+        await cb.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
         await cb.answer()
 
     @dp.callback_query(F.data == "contacts")
     async def contacts(cb: CallbackQuery):
-        await cb.message.edit_text("📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Telegram: @esvig_support\n• Email: support@esvig.com\n• Канал с новостями: @esvig_news\n\nОбычно отвечаем в течение 1–2 часов.", reply_markup=get_back_keyboard())
+        text = (
+            "📞 **Контакты**\n\n"
+            "По всем вопросам обращайтесь:\n"
+            "• Telegram: @esvig_support\n"
+            "• Наш канал: https://t.me/esvig_service\n"
+            "• По поводу сотрудничества/рекламы: @zoldya_vv"
+        )
+        await cb.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
         await cb.answer()
 
-# ------------------ FLASK СИНХРОННЫЙ ВЕБХУК (ОДИН EVENT LOOP) ------------------
+# ------------------ FLASK ЗАПУСК (синхронный вебхук с одним event loop) ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-# Создаём один event loop и будем его переиспользовать
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-# Инициализируем бота при старте (один раз)
 loop.run_until_complete(load_channels())
 loop.run_until_complete(register_handlers(dp_instance))
 print("Бот инициализирован, вебхук готов.")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    # Проверка секретного токена
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         return jsonify({'status': 'unauthorized'}), 401
     update = Update(**request.json)
-    # Запускаем обработку в том же event loop
     loop.run_until_complete(dp_instance.feed_update(bot_instance, update))
     return jsonify({'status': 'ok'})
 
