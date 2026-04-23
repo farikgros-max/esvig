@@ -123,10 +123,18 @@ def get_order_by_id(order_id):
     return {"id": r[0], "user_id": r[1], "username": r[2], "total": r[3], "status": r[4]} if r else None
 
 def clear_non_successful_orders():
-    """Удаляет все заявки, у которых статус НЕ 'оплачена' и НЕ 'выполнена'."""
+    """Удаляет заявки со статусом 'в обработке' или 'отменена'."""
     conn = sqlite3.connect('channels.db')
     c = conn.cursor()
-    c.execute("DELETE FROM orders WHERE status NOT IN ('оплачена', 'выполнена')")
+    c.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
+    conn.commit()
+    conn.close()
+
+def clear_all_orders():
+    """Удаляет ВСЕ заявки без исключения."""
+    conn = sqlite3.connect('channels.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM orders")
     conn.commit()
     conn.close()
 
@@ -263,7 +271,8 @@ def get_profile_keyboard():
 
 def get_stats_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Очистить статистику (только неуспешные)", callback_data="confirm_clear_stats")]
+        [InlineKeyboardButton(text="🧹 Очистить неуспешные", callback_data="clear_not_successful")],
+        [InlineKeyboardButton(text="💣 Полная очистка (всех)", callback_data="clear_all")]
     ])
 
 # ------------------ Обработчики ------------------
@@ -310,20 +319,25 @@ async def register_handlers(dp: Dispatcher):
             txt += "\n📭 За последние 7 дней заявок нет."
         await m.answer(txt, reply_markup=get_stats_keyboard())
 
-    @dp.callback_query(F.data == "confirm_clear_stats")
-    async def ask_clear_stats(cb: CallbackQuery):
+    # ---------- Очистка неуспешных ----------
+    @dp.callback_query(F.data == "clear_not_successful")
+    async def ask_clear_not_successful(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Да, очистить", callback_data="clear_stats_yes")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_stats_no")]
+            [InlineKeyboardButton(text="✅ Да, очистить", callback_data="confirm_clear_not_successful")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_clear")]
         ])
-        await cb.message.edit_text("⚠️ Вы уверены, что хотите **удалить все неуспешные заявки** (в обработке и отменённые)?\nОплаченные и выполненные останутся. Это действие необратимо.", reply_markup=keyboard, parse_mode="Markdown")
+        await cb.message.edit_text(
+            "⚠️ Вы уверены, что хотите **удалить все неуспешные заявки** (со статусами 'в обработке' и 'отменена')?\n"
+            "Оплаченные и выполненные останутся. Это действие необратимо.",
+            reply_markup=keyboard, parse_mode="Markdown"
+        )
         await cb.answer()
 
-    @dp.callback_query(F.data == "clear_stats_yes")
-    async def clear_stats_yes(cb: CallbackQuery):
+    @dp.callback_query(F.data == "confirm_clear_not_successful")
+    async def confirm_clear_not_successful(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
@@ -331,8 +345,37 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text("✅ Неуспешные заявки удалены. Оплаченные и выполненные сохранены.")
         await cb.answer()
 
-    @dp.callback_query(F.data == "clear_stats_no")
-    async def clear_stats_no(cb: CallbackQuery):
+    # ---------- Полная очистка ----------
+    @dp.callback_query(F.data == "clear_all")
+    async def ask_clear_all(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚠️ Да, удалить всё", callback_data="confirm_clear_all")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_clear")]
+        ])
+        await cb.message.edit_text(
+            "⚠️⚠️⚠️ **ВНИМАНИЕ! Полная очистка** ⚠️⚠️⚠️\n\n"
+            "Вы собираетесь удалить **ВСЕ заявки без исключения** (в том числе оплаченные и выполненные).\n"
+            "Это удалит историю заказов у всех пользователей. Балансы и успешные заказы обнулятся.\n\n"
+            "**Это действие необратимо.**\n\n"
+            "Если вы уверены, нажмите «Да, удалить всё».",
+            reply_markup=keyboard, parse_mode="Markdown"
+        )
+        await cb.answer()
+
+    @dp.callback_query(F.data == "confirm_clear_all")
+    async def confirm_clear_all(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        clear_all_orders()
+        await cb.message.edit_text("💣 Полная очистка выполнена. Все заявки удалены.")
+        await cb.answer()
+
+    @dp.callback_query(F.data == "cancel_clear")
+    async def cancel_clear(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
