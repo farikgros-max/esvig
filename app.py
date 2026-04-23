@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request, jsonify
-from database import init_db, get_all_channels, add_channel, delete_channel, update_channel, save_order, get_orders, get_orders_by_user, update_order_status, get_order_by_id, clear_non_successful_orders, get_spheres, get_categories, add_category, delete_category, get_category_by_id
+from database import init_db, get_all_channels, add_channel, delete_channel, update_channel, save_order, get_orders, get_orders_by_user, update_order_status, get_order_by_id, clear_non_successful_orders, clear_all_orders, get_spheres, get_categories, add_category, delete_category, get_category_by_id
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -51,6 +51,7 @@ class AddCategoryStates(StatesGroup):
 # ------------------ Глобальные ------------------
 channels = {}
 user_carts = {}
+current_sphere = 1
 
 def get_cart(uid):
     if uid not in user_carts:
@@ -195,7 +196,8 @@ def get_profile_keyboard():
 
 def get_stats_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Очистить неуспешные", callback_data="confirm_clear_failed")]
+        [InlineKeyboardButton(text="🗑 Очистить неуспешные", callback_data="confirm_clear_failed")],
+        [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")]
     ])
 
 def get_categories_admin_keyboard():
@@ -287,10 +289,22 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer("Нет прав", show_alert=True)
             return
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Да, очистить", callback_data="clear_failed_yes")],
+            [InlineKeyboardButton(text="✅ Да, очистить неуспешные", callback_data="clear_failed_yes")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_no")]
         ])
         await cb.message.edit_text("⚠️ Будут удалены все заявки со статусами «в обработке» и «отменена». Оплаченные и выполненные останутся.", reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data == "confirm_clear_all")
+    async def ask_clear_all(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, полная очистка", callback_data="clear_all_yes")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_no")]
+        ])
+        await cb.message.edit_text("⚠️ **Полная очистка**: будут удалены **все** заявки. Это действие необратимо.", reply_markup=kb, parse_mode="Markdown")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_failed_yes")
@@ -300,6 +314,15 @@ async def register_handlers(dp: Dispatcher):
             return
         clear_non_successful_orders()
         await cb.message.edit_text("✅ Неуспешные заявки удалены.")
+        await cb.answer()
+
+    @dp.callback_query(F.data == "clear_all_yes")
+    async def clear_all(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        clear_all_orders()
+        await cb.message.edit_text("✅ Все заявки удалены.")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_no")
@@ -786,10 +809,12 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         cat_id = int(cb.data.split("_")[3])
         data = await state.get_data()
+        # Получаем актуальное количество каналов из БД
         all_ch = get_all_channels()
-        new_id = f"channel_{len(all_ch)+1}"
+        next_id = len(all_ch) + 1
+        new_id = f"channel_{next_id}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-        await load_channels()
+        await load_channels()  # обновляем глобальную переменную
         await cb.message.edit_text(f"✅ Канал {data['name']} добавлен!")
         await state.clear()
         await cb.message.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
