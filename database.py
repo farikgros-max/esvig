@@ -6,17 +6,14 @@ DB_NAME = 'channels.db'
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # Таблица сфер (например, Криптовалюта, Заработок, Игры и т.д.)
     c.execute('''
         CREATE TABLE IF NOT EXISTS spheres (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE
         )
     ''')
-    # Добавляем базовую сферу "Криптовалюта" если её нет
     c.execute('INSERT OR IGNORE INTO spheres (id, name) VALUES (1, "Криптовалюта")')
     
-    # Таблица категорий
     c.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,7 +25,6 @@ def init_db():
             UNIQUE(sphere_id, name)
         )
     ''')
-    # Добавляем стандартные категории для сферы "Криптовалюта" (sphere_id=1)
     default_cats = [
         ('news', 'Новостные'),
         ('trading', 'Торговые'),
@@ -43,7 +39,6 @@ def init_db():
             VALUES (1, ?, ?, ?)
         ''', (name, display, i))
     
-    # Таблица каналов с привязкой к категории
     c.execute('''
         CREATE TABLE IF NOT EXISTS channels (
             id TEXT PRIMARY KEY,
@@ -61,7 +56,6 @@ def init_db():
     if 'category_id' not in cols:
         c.execute('ALTER TABLE channels ADD COLUMN category_id INTEGER REFERENCES categories(id)')
     
-    # Таблица заявок (без изменений)
     c.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +77,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ----- Функции для сфер и категорий -----
+# ----- Сферы и категории -----
 def get_spheres():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -128,7 +122,7 @@ def get_category_by_id(cat_id):
     conn.close()
     return {"id": r[0], "sphere_id": r[1], "name": r[2], "display_name": r[3]} if r else None
 
-# ----- Функции для каналов (с категориями) -----
+# ----- Каналы -----
 def get_all_channels(category_id=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -173,13 +167,13 @@ def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None,
     conn.close()
 
 def delete_channel(ch_id):
-    conn = sqlite3.connect('channels.db')
+    conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('DELETE FROM channels WHERE id = ?', (ch_id,))
     conn.commit()
     conn.close()
 
-# Остальные функции (orders) остаются без изменений
+# ----- Заказы -----
 def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -228,15 +222,9 @@ def get_order_by_id(order_id):
     return {"id": r[0], "user_id": r[1], "username": r[2], "total": r[3], "status": r[4]} if r else None
 
 def clear_non_successful_orders():
+    """Удаляет заявки со статусами 'в обработке' и 'отменена'."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("DELETE FROM orders WHERE status NOT IN ('оплачена', 'выполнена')")
-    conn.commit()
-    conn.close()
-
-def clear_all_orders():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('DELETE FROM orders')
+    c.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
     conn.commit()
     conn.close()
