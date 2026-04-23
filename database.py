@@ -25,7 +25,6 @@ def init_db():
             UNIQUE(sphere_id, name)
         )
     ''')
-    # Добавляем категории для сферы 1
     default_cats = [
         ('news', 'Новостные'),
         ('trading', 'Торговые'),
