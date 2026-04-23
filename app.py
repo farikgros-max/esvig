@@ -122,10 +122,11 @@ def get_order_by_id(order_id):
     conn.close()
     return {"id": r[0], "user_id": r[1], "username": r[2], "total": r[3], "status": r[4]} if r else None
 
-def clear_all_orders():
+def clear_non_successful_orders():
+    """Удаляет все заявки, у которых статус НЕ 'оплачена' и НЕ 'выполнена'."""
     conn = sqlite3.connect('channels.db')
     c = conn.cursor()
-    c.execute('DELETE FROM orders')
+    c.execute("DELETE FROM orders WHERE status NOT IN ('оплачена', 'выполнена')")
     conn.commit()
     conn.close()
 
@@ -262,7 +263,7 @@ def get_profile_keyboard():
 
 def get_stats_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Очистить статистику", callback_data="confirm_clear_stats")]
+        [InlineKeyboardButton(text="🗑 Очистить статистику (только неуспешные)", callback_data="confirm_clear_stats")]
     ])
 
 # ------------------ Обработчики ------------------
@@ -318,7 +319,7 @@ async def register_handlers(dp: Dispatcher):
             [InlineKeyboardButton(text="✅ Да, очистить", callback_data="clear_stats_yes")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_stats_no")]
         ])
-        await cb.message.edit_text("⚠️ Вы уверены, что хотите **очистить всю статистику** (удалить все заявки)?\nЭто действие необратимо.", reply_markup=keyboard, parse_mode="Markdown")
+        await cb.message.edit_text("⚠️ Вы уверены, что хотите **удалить все неуспешные заявки** (в обработке и отменённые)?\nОплаченные и выполненные останутся. Это действие необратимо.", reply_markup=keyboard, parse_mode="Markdown")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_stats_yes")
@@ -326,8 +327,8 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
-        clear_all_orders()
-        await cb.message.edit_text("✅ Статистика успешно очищена (все заявки удалены).")
+        clear_non_successful_orders()
+        await cb.message.edit_text("✅ Неуспешные заявки удалены. Оплаченные и выполненные сохранены.")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_stats_no")
@@ -711,7 +712,8 @@ async def register_handlers(dp: Dispatcher):
     async def my_ords(cb: CallbackQuery):
         ords = get_orders_by_user(cb.from_user.id, 10, only_completed=False)
         if not ords:
-            await cb.message.edit_text("У вас пока нет заявок", reply_markup=get_main_keyboard())
+            await cb.message.delete()
+            await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
             await cb.answer()
             return
         txt = "📊 Ваши заявки:\n\n"
