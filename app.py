@@ -703,5 +703,5 @@ def set_webhook():
     print(f"Webhook set result: {r.json()}")
     return jsonify({'status': 'ok', 'result': r.json()})
 
-# Для gunicorn (переменная application)
+# Для gunicorn
 application = app
