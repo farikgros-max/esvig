@@ -1,4 +1,3 @@
-import os
 import asyncio
 import json
 import sqlite3
@@ -19,7 +18,7 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
 
-# --- БАЗА ДАННЫХ (SQLite) ---
+# ------------------ БАЗА ДАННЫХ ------------------
 def init_db():
     conn = sqlite3.connect('channels.db')
     cur = conn.cursor()
@@ -145,7 +144,7 @@ def get_order_by_id(order_id):
 
 init_db()
 
-# --- СОСТОЯНИЯ FSM ---
+# ------------------ СОСТОЯНИЯ ------------------
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
     waiting_for_contact = State()
@@ -164,7 +163,7 @@ class EditChannelStates(StatesGroup):
     waiting_for_url = State()
     waiting_for_description = State()
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+# ------------------ ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ------------------
 channels = {}
 user_carts = {}
 
@@ -181,7 +180,7 @@ async def load_channels():
     channels = get_all_channels()
     print(f"Загружено {len(channels)} каналов")
 
-# --- КЛАВИАТУРЫ (сокращённо, все есть) ---
+# ------------------ КЛАВИАТУРЫ ------------------
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Каталог каналов", callback_data="view_catalog_page_0"), InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart")],
@@ -280,7 +279,7 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]
     ])
 
-# --- ОБРАБОТЧИКИ БОТА (полная логика) ---
+# ------------------ ОБРАБОТЧИКИ БОТА ------------------
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
@@ -665,7 +664,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text("📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Telegram: @esvig_support\n• Email: support@esvig.com\n• Канал с новостями: @esvig_news\n\nОбычно отвечаем в течение 1–2 часов.", reply_markup=get_back_keyboard())
         await cb.answer()
 
-# ---------- Flask приложение (синхронное) ----------
+# ------------------ FLASK АСИНХРОННЫЕ МАРШРУТЫ ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
@@ -675,30 +674,25 @@ dp_instance = Dispatcher(storage=MemoryStorage())
 _started = False
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     global _started
     if not _started:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(load_channels())
-        loop.run_until_complete(register_handlers(dp_instance))
+        await load_channels()
+        await register_handlers(dp_instance)
         _started = True
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         return jsonify({'status': 'unauthorized'}), 401
     update = Update(**request.json)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(dp_instance.feed_update(bot_instance, update))
+    await dp_instance.feed_update(bot_instance, update)
     return jsonify({'status': 'ok'})
 
 @app.route('/set_webhook', methods=['GET'])
-def set_webhook():
+async def set_webhook():
     webhook_url = "https://esvig-production.up.railway.app/webhook"
     r = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
         json={"url": webhook_url, "secret_token": SECRET_TOKEN}
     )
-    print(f"Webhook set result: {r.json()}")
     return jsonify({'status': 'ok', 'result': r.json()})
 
 # Для gunicorn
