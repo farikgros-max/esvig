@@ -13,9 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request, jsonify
 
 # ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set")
+BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
 ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
@@ -183,7 +181,7 @@ async def load_channels():
     channels = get_all_channels()
     print(f"Загружено {len(channels)} каналов")
 
-# --- КЛАВИАТУРЫ ---
+# --- КЛАВИАТУРЫ (сокращённо, все есть) ---
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Каталог каналов", callback_data="view_catalog_page_0"), InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart")],
@@ -282,7 +280,7 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]
     ])
 
-# --- ОБРАБОТЧИКИ БОТА (вся логика, полная) ---
+# --- ОБРАБОТЧИКИ БОТА (полная логика) ---
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
@@ -667,7 +665,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text("📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Telegram: @esvig_support\n• Email: support@esvig.com\n• Канал с новостями: @esvig_news\n\nОбычно отвечаем в течение 1–2 часов.", reply_markup=get_back_keyboard())
         await cb.answer()
 
-# ---------- Flask приложение (синхронные эндпоинты) ----------
+# ---------- Flask приложение (синхронное) ----------
 flask_app = Flask(__name__)
 app = flask_app
 
@@ -695,7 +693,7 @@ def webhook():
 
 @app.route('/set_webhook', methods=['GET'])
 def set_webhook():
-    webhook_url = f"https://{app.config.get('SERVER_NAME', request.host)}/webhook"
+    webhook_url = "https://esvig-production.up.railway.app/webhook"
     r = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
         json={"url": webhook_url, "secret_token": SECRET_TOKEN}
