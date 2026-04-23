@@ -15,7 +15,7 @@ from flask import Flask, request, jsonify
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
-ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 1102475836]
+ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
@@ -738,20 +738,6 @@ asyncio.set_event_loop(loop)
 loop.run_until_complete(load_channels())
 loop.run_until_complete(register_handlers(dp_instance))
 print("Бот готов")
-
-# Автоматическая установка вебхука
-def set_webhook_on_startup():
-    webhook_url = "https://esvig-production.up.railway.app/webhook"
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": webhook_url, "secret_token": SECRET_TOKEN}
-        )
-        print(f"Webhook set result: {r.json()}")
-    except Exception as e:
-        print(f"Error setting webhook: {e}")
-
-set_webhook_on_startup()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
