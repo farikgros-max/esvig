@@ -218,7 +218,6 @@ def get_order_by_id(order_id):
     return {"id": r[0], "user_id": r[1], "username": r[2], "total": r[3], "status": r[4]} if r else None
 
 def clear_non_successful_orders():
-    """Удаляет заявки со статусами 'в обработке' и 'отменена'"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
@@ -226,7 +225,6 @@ def clear_non_successful_orders():
     conn.close()
 
 def clear_all_orders():
-    """Удаляет ВСЕ заявки (полная очистка)"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('DELETE FROM orders')
