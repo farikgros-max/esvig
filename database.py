@@ -25,6 +25,7 @@ def init_db():
             UNIQUE(sphere_id, name)
         )
     ''')
+    # Добавляем категории для сферы 1
     default_cats = [
         ('news', 'Новостные'),
         ('trading', 'Торговые'),
@@ -73,11 +74,9 @@ def init_db():
     cols = [col[1] for col in c.fetchall()]
     if 'status' not in cols:
         c.execute('ALTER TABLE orders ADD COLUMN status TEXT DEFAULT "в обработке"')
-    
     conn.commit()
     conn.close()
 
-# ----- Сферы и категории -----
 def get_spheres():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -122,7 +121,6 @@ def get_category_by_id(cat_id):
     conn.close()
     return {"id": r[0], "sphere_id": r[1], "name": r[2], "display_name": r[3]} if r else None
 
-# ----- Каналы -----
 def get_all_channels(category_id=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -131,9 +129,9 @@ def get_all_channels(category_id=None):
     else:
         c.execute('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
     rows = c.fetchall()
-    channels = {}
+    ch = {}
     for r in rows:
-        channels[r[0]] = {
+        ch[r[0]] = {
             "name": r[1],
             "price": r[2],
             "subscribers": r[3],
@@ -142,7 +140,7 @@ def get_all_channels(category_id=None):
             "category_id": r[6]
         }
     conn.close()
-    return channels
+    return ch
 
 def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     conn = sqlite3.connect(DB_NAME)
@@ -173,7 +171,6 @@ def delete_channel(ch_id):
     conn.commit()
     conn.close()
 
-# ----- Заказы -----
 def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -222,9 +219,17 @@ def get_order_by_id(order_id):
     return {"id": r[0], "user_id": r[1], "username": r[2], "total": r[3], "status": r[4]} if r else None
 
 def clear_non_successful_orders():
-    """Удаляет заявки со статусами 'в обработке' и 'отменена'."""
+    """Удаляет заявки со статусами 'в обработке' и 'отменена'"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
+    conn.commit()
+    conn.close()
+
+def clear_all_orders():
+    """Удаляет ВСЕ заявки (полная очистка)"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('DELETE FROM orders')
     conn.commit()
     conn.close()
