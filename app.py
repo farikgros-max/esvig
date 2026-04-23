@@ -21,12 +21,8 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
 
-# Список ID стикеров для случайного выбора при приветствии
-GREETING_STICKERS = [
-    "CAACAgIAAxkBAAIFAmdh...",  # замените на реальные ID стикеров, если есть
-    # можно использовать любой стикер, который у вас есть
-]
-# Если стикеров нет, просто используем emoji
+# Стикеры для приветствия (если есть – укажите ID, если нет – оставьте пустым)
+GREETING_STICKERS = []  # например: ["CAACAgIAAxkBAAIFAmdh...", "CAACAgIAAxkBAAIFAmdh..."]
 
 def get_random_greeting():
     greetings = [
@@ -34,7 +30,9 @@ def get_random_greeting():
         "🌟 С возвращением!",
         "🤝 Приветствую!",
         "🎉 Снова здесь? Отлично!",
-        "🚀 Здравствуй, торговец рекламой!"
+        "🚀 Здравствуй, торговец рекламой!",
+        "💎 Привет, друг!",
+        "🔥 С возвращением, легенда!"
     ]
     return random.choice(greetings)
 
@@ -309,7 +307,6 @@ async def register_handlers(dp: Dispatcher):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         greeting = get_random_greeting()
         text = f"{greeting}, {user_name}!\n\n💰 Твой баланс: 0$\n\n🚀 Приятных покупок! 🛍️"
-        # отправка стикера, если есть
         sticker_id = get_random_sticker()
         if sticker_id:
             await m.answer_sticker(sticker_id)
