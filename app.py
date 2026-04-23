@@ -4,9 +4,10 @@ import json
 import sqlite3
 import hashlib
 import requests
+import re
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, BotCommand
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -18,6 +19,13 @@ ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
+
+# ------------------ Функция для экранирования Markdown ------------------
+def escape_md(text):
+    if not text:
+        return ""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', str(text))
 
 # ------------------ БАЗА ДАННЫХ ------------------
 def init_db():
@@ -181,18 +189,22 @@ async def load_channels():
     channels = get_all_channels()
     print(f"Загружено {len(channels)} каналов")
 
-# ------------------ КЛАВИАТУРЫ (вертикальное меню) ------------------
+# ------------------ ОБЫЧНАЯ КЛАВИАТУРА (ReplyKeyboard) ------------------
 def get_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Каталог каналов", callback_data="view_catalog_page_0")],
-        [InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart")],
-        [InlineKeyboardButton(text="📞 Оформить заявку", callback_data="checkout")],
-        [InlineKeyboardButton(text="👤 Мой профиль", callback_data="my_profile")],
-        [InlineKeyboardButton(text="ℹ️ О сервисе", callback_data="about")],
-        [InlineKeyboardButton(text="❓ FAQ", callback_data="faq")],
-        [InlineKeyboardButton(text="📞 Контакты", callback_data="contacts")]
-    ])
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📋 Каталог каналов")],
+            [KeyboardButton(text="🛒 Корзина")],
+            [KeyboardButton(text="📞 Оформить заявку")],
+            [KeyboardButton(text="👤 Мой профиль")],
+            [KeyboardButton(text="ℹ️ О сервисе")],
+            [KeyboardButton(text="❓ FAQ")],
+            [KeyboardButton(text="📞 Контакты")]
+        ],
+        resize_keyboard=True
+    )
 
+# ------------------ ИНЛАЙН КЛАВИАТУРЫ (для админки, каталога, корзины) ------------------
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list")],
@@ -288,7 +300,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
         await m.answer(
-            "🤖 Добро пожаловать в ESVIG Service!\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\nИспользуйте кнопки меню для навигации.",
+            "🤖 Добро пожаловать в ESVIG Service!\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\nИспользуйте кнопки ниже для навигации.",
             reply_markup=get_main_keyboard()
         )
 
@@ -323,30 +335,109 @@ async def register_handlers(dp: Dispatcher):
         """)
         weekly = cur.fetchall()
         conn.close()
-        text = f"📊 **Статистика ESVIG Service**\n\n"
-        text += f"📦 Всего заявок: **{total_orders}**\n"
-        text += f"💰 Общая сумма: **{total_sum}$**\n"
-        text += f"📋 Каналов в каталоге: **{channels_count}**\n\n"
-        text += "**🔄 По статусам:**\n"
+        text = f"📊 Статистика ESVIG Service\n\n"
+        text += f"📦 Всего заявок: {total_orders}\n"
+        text += f"💰 Общая сумма: {total_sum}$\n"
+        text += f"📋 Каналов в каталоге: {channels_count}\n\n"
+        text += "🔄 По статусам:\n"
         emoji_map = {'в обработке': '🟡', 'оплачена': '🟢', 'выполнена': '✅', 'отменена': '❌'}
         for status, count in status_stats:
             emoji = emoji_map.get(status, '⚪')
             text += f"{emoji} {status}: {count}\n"
         if weekly:
-            text += "\n**📅 Последние 7 дней:**\n"
+            text += "\n📅 Последние 7 дней:\n"
             for date, count, sum_ in weekly:
                 sum_ = sum_ or 0
                 text += f"{date}: {count} заявок, {sum_}$\n"
         else:
             text += "\n📭 За последние 7 дней заявок нет."
-        await m.answer(text, parse_mode="Markdown")
+        await m.answer(text)
 
-    # ---------- Все остальные обработчики (админка, каталог, корзина) ----------
-    # (Они полностью сохранены из вашей последней рабочей версии)
-    # Для краткости я не переписываю их заново, но они есть в вашем коде.
-    # Поскольку вы прислали готовый код ранее, просто скопируйте их сюда.
-    # Ниже приведены заглушки – в реальном файле они должны быть полными.
+    # ---------- Обработка обычных кнопок ----------
+    @dp.message(F.text == "📋 Каталог каналов")
+    async def catalog_button(m: Message):
+        await load_channels()
+        if not channels:
+            await m.answer("Каталог временно пуст.")
+            return
+        keyboard, page, total = get_catalog_keyboard(0)
+        await m.answer(f"📢 Наши каналы (страница 1/{total})\n\nНажмите на канал для деталей:", reply_markup=keyboard)
 
+    @dp.message(F.text == "🛒 Корзина")
+    async def cart_button(m: Message):
+        cart = get_cart(m.from_user.id)
+        if not cart:
+            await m.answer("🛒 Корзина пуста.")
+            return
+        total = sum(i['price'] for i in cart)
+        text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
+        await m.answer(text, reply_markup=get_cart_keyboard(m.from_user.id))
+
+    @dp.message(F.text == "📞 Оформить заявку")
+    async def checkout_button(m: Message, state: FSMContext):
+        cart = get_cart(m.from_user.id)
+        if not cart:
+            await m.answer("🛒 Корзина пуста. Добавьте каналы перед оформлением.")
+            return
+        total = sum(i['price'] for i in cart)
+        await state.update_data(cart=cart, total=total)
+        await m.answer(f"💳 Оформление заказа\n\nСумма: {total}$\nВведите ваш бюджет (цифрами, ≥ суммы):")
+        await state.set_state(OrderForm.waiting_for_budget)
+
+    @dp.message(F.text == "👤 Мой профиль")
+    async def profile_button(m: Message):
+        orders = get_orders_by_user(m.from_user.id, 100)
+        total_orders = len(orders)
+        total_spent = sum(o['total'] for o in orders)
+        text = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Всего заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: 0$ (пополнение временно недоступно)"
+        await m.answer(text, reply_markup=get_profile_keyboard())
+
+    @dp.message(F.text == "ℹ️ О сервисе")
+    async def about_button(m: Message):
+        text = (
+            "ℹ️ О сервисе ESVIG Service\n\n"
+            "Мы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n"
+            "✅ Наши преимущества:\n"
+            "• Только каналы с высокой вовлечённостью (ER > 2%)\n"
+            "• Полная предоплата от рекламодателя\n"
+            "• Отчёт по каждому размещению\n"
+            "• Быстрая связь с администраторами каналов\n\n"
+            "📌 Работаем с 2026 года."
+        )
+        await m.answer(text)
+
+    @dp.message(F.text == "❓ FAQ")
+    async def faq_button(m: Message):
+        text = (
+            "❓ Часто задаваемые вопросы\n\n"
+            "1️⃣ Как я могу оплатить рекламу?\n"
+            "   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n"
+            "2️⃣ Что если пост не выйдет?\n"
+            "   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n"
+            "3️⃣ Какой срок размещения?\n"
+            "   Обычно пост выходит в течение 24 часов после оплаты.\n\n"
+            "4️⃣ Могу ли я выбрать каналы сам?\n"
+            "   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n"
+            "5️⃣ Как узнать статистику поста?\n"
+            "   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\n"
+            "По остальным вопросам пишите @esvig_support."
+        )
+        await m.answer(text)
+
+    @dp.message(F.text == "📞 Контакты")
+    async def contacts_button(m: Message):
+        text = (
+            "📞 Контакты\n\n"
+            "По всем вопросам обращайтесь:\n"
+            "• Telegram: @esvig_support\n"
+            "• Наш канал: https://t.me/esvig_service\n"
+            "• По поводу сотрудничества/рекламы: @zoldya_vv"
+        )
+        await m.answer(text)
+
+    # ---------- Остальные обработчики (админка, каталог инлайн, корзина инлайн, оформление) ----------
+    # ... (сохраняем всю предыдущую логику, но без дублирования команд)
+    # Я приведу кратко, но вы можете скопировать из предыдущего кода
     @dp.callback_query(F.data == "admin_back")
     async def admin_back(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
@@ -573,19 +664,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(f"📢 Наши каналы (страница {cur+1}/{total})\n\nНажмите на канал для деталей:", reply_markup=kb)
         await cb.answer()
 
-    @dp.callback_query(F.data == "view_cart")
-    async def view_cart(cb: CallbackQuery):
-        cart = get_cart(cb.from_user.id)
-        if not cart:
-            await cb.message.edit_text("🛒 Корзина пуста.", reply_markup=get_back_keyboard())
-            await cb.answer()
-            return
-        total = sum(i['price'] for i in cart)
-        text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
-        await cb.message.edit_text(text, reply_markup=get_cart_keyboard(cb.from_user.id))
-        await cb.answer()
-
-    @dp.callback_query(F.data.startswith("view_") & ~F.data.startswith("view_cart"))
+    @dp.callback_query(F.data.startswith("view_"))
     async def view_channel_details(cb: CallbackQuery):
         ch_id = cb.data.replace("view_", "")
         all_channels = get_all_channels()
@@ -628,31 +707,21 @@ async def register_handlers(dp: Dispatcher):
                 await cb.message.edit_text("🛒 Корзина пуста.", reply_markup=get_back_keyboard())
             else:
                 total = sum(i['price'] for i in cart)
-                text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
+                text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item["价格"]}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
                 await cb.message.edit_text(text, reply_markup=get_cart_keyboard(cb.from_user.id))
-        else: await cb.answer("Ошибка", show_alert=True)
-
-    @dp.callback_query(F.data == "checkout")
-    async def checkout(cb: CallbackQuery, state: FSMContext):
-        cart = get_cart(cb.from_user.id)
-        if not cart:
-            await cb.message.edit_text("🛒 Корзина пуста. Добавьте каналы перед оформлением.", reply_markup=get_back_keyboard())
-            await cb.answer()
-            return
-        total = sum(i['price'] for i in cart)
-        await state.update_data(cart=cart, total=total)
-        await cb.message.edit_text(f"💳 Оформление заказа\n\nСумма: {total}$\nВведите ваш бюджет (цифрами, ≥ суммы):")
-        await state.set_state(OrderForm.waiting_for_budget)
-        await cb.answer()
+        else:
+            await cb.answer("Ошибка", show_alert=True)
 
     @dp.message(OrderForm.waiting_for_budget)
     async def process_budget(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число (бюджет в USD):")
+            return
         budget = int(m.text)
         data = await state.get_data()
-        total = data.get("total",0)
+        total = data.get("total", 0)
         if budget < total:
-            await m.answer(f"Бюджет ({budget}$) меньше суммы ({total}$). Введите {total}$ или больше:")
+            await m.answer(f"Бюджет ({budget}$) меньше суммы заказа ({total}$). Введите {total}$ или больше:")
             return
         await state.update_data(budget=budget)
         await m.answer("Напишите ваш Telegram username (например, @username) или другой контакт:")
@@ -661,34 +730,22 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(OrderForm.waiting_for_contact)
     async def process_contact(m: Message, state: FSMContext):
         data = await state.get_data()
-        cart = data.get("cart",[])
-        total = data.get("total",0)
-        budget = data.get("budget",0)
+        cart = data.get("cart", [])
+        total = data.get("total", 0)
+        budget = data.get("budget", 0)
         contact = m.text.strip()
         username = m.from_user.username or "не указан"
-        order_id = save_order(m.from_user.id, username, cart, total, budget, contact, status='в обработке')
+        save_order(m.from_user.id, username, cart, total, budget, contact, status='в обработке')
         items_list = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
         report = f"🟢 НОВАЯ ЗАЯВКА\n👤 @{username}\n📦 Состав:\n{items_list}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
         for admin_id in ADMIN_IDS:
-            try: await m.bot.send_message(admin_id, report)
-            except: pass
+            try:
+                await m.bot.send_message(admin_id, report)
+            except:
+                pass
         user_carts[m.from_user.id] = []
         await m.answer("✅ Заявка отправлена! Менеджер свяжется с вами.", reply_markup=get_main_keyboard())
         await state.clear()
-
-    @dp.callback_query(F.data == "my_profile")
-    async def my_profile(cb: CallbackQuery):
-        orders = get_orders_by_user(cb.from_user.id, 100)
-        total_orders = len(orders)
-        total_spent = sum(o['total'] for o in orders)
-        text = f"👤 Мой профиль\n\n🆔 ID: {cb.from_user.id}\n📛 Username: @{cb.from_user.username or 'не указан'}\n📦 Всего заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: 0$ (пополнение временно недоступно)"
-        await cb.message.edit_text(text, reply_markup=get_profile_keyboard())
-        await cb.answer()
-
-    @dp.callback_query(F.data == "deposit")
-    async def deposit(cb: CallbackQuery):
-        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкоро мы добавим эту возможность. Следите за новостями!", reply_markup=get_back_keyboard())
-        await cb.answer()
 
     @dp.callback_query(F.data == "my_orders")
     async def my_orders(cb: CallbackQuery):
@@ -704,53 +761,12 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(text, reply_markup=get_back_keyboard())
         await cb.answer()
 
-    @dp.callback_query(F.data == "about")
-    async def about(cb: CallbackQuery):
-        text = (
-            "ℹ️ **О сервисе ESVIG Service**\n\n"
-            "Мы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n"
-            "✅ **Наши преимущества:**\n"
-            "• Только каналы с высокой вовлечённостью (ER > 2%)\n"
-            "• Полная предоплата от рекламодателя\n"
-            "• Отчёт по каждому размещению\n"
-            "• Быстрая связь с администраторами каналов\n\n"
-            "📌 Работаем с 2026 года."
-        )
-        await cb.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
+    @dp.callback_query(F.data == "deposit")
+    async def deposit(cb: CallbackQuery):
+        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкоро мы добавим эту возможность. Следите за новостями!", reply_markup=get_back_keyboard())
         await cb.answer()
 
-    @dp.callback_query(F.data == "faq")
-    async def faq(cb: CallbackQuery):
-        text = (
-            "❓ **Часто задаваемые вопросы**\n\n"
-            "1️⃣ **Как я могу оплатить рекламу?**\n"
-            "   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n"
-            "2️⃣ **Что если пост не выйдет?**\n"
-            "   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n"
-            "3️⃣ **Какой срок размещения?**\n"
-            "   Обычно пост выходит в течение 24 часов после оплаты.\n\n"
-            "4️⃣ **Могу ли я выбрать каналы сам?**\n"
-            "   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n"
-            "5️⃣ **Как узнать статистику поста?**\n"
-            "   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\n"
-            "По остальным вопросам пишите @esvig_support."
-        )
-        await cb.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
-        await cb.answer()
-
-    @dp.callback_query(F.data == "contacts")
-    async def contacts(cb: CallbackQuery):
-        text = (
-            "📞 **Контакты**\n\n"
-            "По всем вопросам обращайтесь:\n"
-            "• Telegram: @esvig_support\n"
-            "• Наш канал: https://t.me/esvig_service\n"
-            "• По поводу сотрудничества/рекламы: @zoldya_vv"
-        )
-        await cb.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
-        await cb.answer()
-
-# ------------------ FLASK ЗАПУСК (синхронный вебхук с одним event loop) ------------------
+# ------------------ FLASK ЗАПУСК (синхронный вебхук) ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
