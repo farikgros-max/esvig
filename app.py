@@ -5,9 +5,10 @@ import sqlite3
 import hashlib
 import re
 import requests
+import random
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, InputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -20,8 +21,27 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
 
-# Временное хранилище для подтверждения очистки статистики
-clear_stats_confirm = {}
+# Список ID стикеров для случайного выбора при приветствии
+GREETING_STICKERS = [
+    "CAACAgIAAxkBAAIFAmdh...",  # замените на реальные ID стикеров, если есть
+    # можно использовать любой стикер, который у вас есть
+]
+# Если стикеров нет, просто используем emoji
+
+def get_random_greeting():
+    greetings = [
+        "✨ Рад видеть тебя снова",
+        "🌟 С возвращением!",
+        "🤝 Приветствую!",
+        "🎉 Снова здесь? Отлично!",
+        "🚀 Здравствуй, торговец рекламой!"
+    ]
+    return random.choice(greetings)
+
+def get_random_sticker():
+    if GREETING_STICKERS:
+        return random.choice(GREETING_STICKERS)
+    return None
 
 def escape_md(text):
     if not text: return ""
@@ -276,12 +296,23 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]
     ])
 
+def get_stats_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Очистить статистику", callback_data="confirm_clear_stats")]
+    ])
+    return keyboard
+
 # ------------------ Обработчики ------------------
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
-        text = f"Рад видеть тебя снова, {user_name}\n\nТвой баланс: 0$\nПриятных покупок!"
+        greeting = get_random_greeting()
+        text = f"{greeting}, {user_name}!\n\n💰 Твой баланс: 0$\n\n🚀 Приятных покупок! 🛍️"
+        # отправка стикера, если есть
+        sticker_id = get_random_sticker()
+        if sticker_id:
+            await m.answer_sticker(sticker_id)
         await m.answer(text, reply_markup=get_main_keyboard())
 
     @dp.message(Command("admin"))
@@ -318,27 +349,36 @@ async def register_handlers(dp: Dispatcher):
                 txt += f"{d}: {cnt} заявок, {s or 0}$\n"
         else:
             txt += "\n📭 За последние 7 дней заявок нет."
-        await m.answer(txt)
+        await m.answer(txt, reply_markup=get_stats_keyboard())
 
-    @dp.message(Command("clear_stats"))
-    async def clear_stats_cmd(m: Message):
-        if m.from_user.id not in ADMIN_IDS:
-            await m.answer("Нет прав")
+    @dp.callback_query(F.data == "confirm_clear_stats")
+    async def ask_clear_stats(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
             return
-        clear_stats_confirm[m.from_user.id] = True
-        await m.answer("⚠️ Вы уверены, что хотите очистить всю статистику (удалить все заявки)?\nОтправьте /confirm_clear в течение 30 секунд.")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, очистить", callback_data="clear_stats_yes")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_stats_no")]
+        ])
+        await cb.message.edit_text("⚠️ Вы уверены, что хотите **очистить всю статистику** (удалить все заявки)?\nЭто действие необратимо.", reply_markup=keyboard, parse_mode="Markdown")
+        await cb.answer()
 
-    @dp.message(Command("confirm_clear"))
-    async def confirm_clear(m: Message):
-        if m.from_user.id not in ADMIN_IDS:
-            await m.answer("Нет прав")
+    @dp.callback_query(F.data == "clear_stats_yes")
+    async def clear_stats_yes(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
             return
-        if clear_stats_confirm.get(m.from_user.id):
-            clear_all_orders()
-            del clear_stats_confirm[m.from_user.id]
-            await m.answer("✅ Статистика успешно очищена (все заявки удалены).")
-        else:
-            await m.answer("Нет запроса на очистку. Используйте /clear_stats")
+        clear_all_orders()
+        await cb.message.edit_text("✅ Статистика успешно очищена (все заявки удалены).")
+        await cb.answer()
+
+    @dp.callback_query(F.data == "clear_stats_no")
+    async def clear_stats_no(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        await cb.message.delete()
+        await cb.answer("Очистка отменена")
 
     @dp.message(F.text == "📋 Каталог каналов")
     async def cat(m: Message):
@@ -361,7 +401,6 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(F.text == "👤 Мой профиль")
     async def profile(m: Message):
-        # Только завершённые (оплаченные или выполненные) заказы считаем как траты
         completed_orders = get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
         total_spent = sum(o['total'] for o in completed_orders)
         total_orders = len(completed_orders)
