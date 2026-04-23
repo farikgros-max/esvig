@@ -4,14 +4,14 @@ import sqlite3
 import hashlib
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, Update
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request, jsonify
 
 # ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = "8524671546:AAGbVS-5ls9p21pugUnR3Hb9e-c59_t7uVI"
+BOT_TOKEN = "8524671546:AAGbVS-5ls9p21pugUnR3Hb9e-c59_t7uVI"  # замените на новый после /revoke
 ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
@@ -179,7 +179,7 @@ async def load_channels():
     channels = get_all_channels()
     print(f"Загружено {len(channels)} каналов")
 
-# --- КЛАВИАТУРЫ (все как у вас было, но сокращённо для читаемости) ---
+# --- КЛАВИАТУРЫ ---
 def get_main_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Каталог каналов", callback_data="view_catalog_page_0"), InlineKeyboardButton(text="🛒 Корзина", callback_data="view_cart")],
@@ -198,19 +198,20 @@ def get_admin_keyboard():
     ])
 
 def get_catalog_keyboard(page=0):
-    if not channels: return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]]), 0, 0
+    if not channels:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]]), 0, 0
     items = list(channels.items())
-    total = (len(items)+ITEMS_PER_PAGE-1)//ITEMS_PER_PAGE
-    if page<0: page=0
-    if page>=total: page=total-1
-    start = page*ITEMS_PER_PAGE
-    end = start+ITEMS_PER_PAGE
+    total = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    if page < 0: page = 0
+    if page >= total: page = total - 1
+    start = page * ITEMS_PER_PAGE
+    end = start + ITEMS_PER_PAGE
     buttons = []
-    for ch_id,info in items[start:end]:
+    for ch_id, info in items[start:end]:
         buttons.append([InlineKeyboardButton(text=f"{info['name']} ({info['subscribers']} подп., {info['price']}$)", callback_data=f"view_{ch_id}")])
     nav = []
-    if page>0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{page-1}"))
-    if page<total-1: nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{page+1}"))
+    if page > 0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{page-1}"))
+    if page < total - 1: nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{page+1}"))
     if nav: buttons.append(nav)
     buttons.append([InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons), page, total
@@ -225,7 +226,7 @@ def get_cart_keyboard(uid):
     cart = get_cart(uid)
     if not cart: return None
     buttons = []
-    for idx,item in enumerate(cart):
+    for idx, item in enumerate(cart):
         buttons.append([InlineKeyboardButton(text=f"❌ Удалить {item['name']} ({item['price']}$)", callback_data=f"remove_{idx}")])
     buttons.append([InlineKeyboardButton(text="💳 Перейти к оформлению", callback_data="checkout")])
     buttons.append([InlineKeyboardButton(text="🗑 Очистить корзину", callback_data="clear_cart")])
@@ -238,7 +239,7 @@ def get_back_keyboard():
 def get_admin_list_keyboard():
     if not channels: return None
     buttons = []
-    for ch_id,info in channels.items():
+    for ch_id, info in channels.items():
         buttons.append([InlineKeyboardButton(text=f"{info['name']} | {info['price']}$ | {info['subscribers']} подп.", callback_data=f"admin_view_{ch_id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -246,7 +247,7 @@ def get_admin_list_keyboard():
 def get_admin_remove_keyboard():
     if not channels: return None
     buttons = []
-    for ch_id,info in channels.items():
+    for ch_id, info in channels.items():
         buttons.append([InlineKeyboardButton(text=f"❌ {info['name']} ({info['price']}$)", callback_data=f"admin_del_{ch_id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -255,7 +256,7 @@ def get_admin_orders_keyboard(orders):
     if not orders: return None
     buttons = []
     for o in orders:
-        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(o['status'],'⚪')
+        emoji = {'в обработке': '🟡', 'оплачена': '🟢', 'выполнена': '✅', 'отменена': '❌'}.get(o['status'], '⚪')
         buttons.append([InlineKeyboardButton(text=f"{emoji} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -277,7 +278,7 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]
     ])
 
-# --- ОБРАБОТЧИКИ БОТА (вся ваша старая логика) ---
+# --- ОБРАБОТЧИКИ БОТА (полная логика) ---
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def cmd_start(m: Message):
@@ -292,25 +293,36 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "admin_back")
     async def admin_back(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await cb.message.edit_text("👑 Админ-панель", reply_markup=get_admin_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "admin_orders")
     async def admin_orders(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         orders = get_orders(20)
-        if not orders: await cb.message.edit_text("📭 Заявок пока нет.", reply_markup=get_back_keyboard()); await cb.answer(); return
+        if not orders:
+            await cb.message.edit_text("📭 Заявок пока нет.", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(orders))
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("admin_order_"))
     async def admin_view_order(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         order_id = int(cb.data.split("_")[2])
         order = get_order_by_id(order_id)
-        if not order: await cb.answer("Заявка не найдена", show_alert=True); return
-        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(order['status'],'⚪')
+        if not order:
+            await cb.answer("Заявка не найдена", show_alert=True)
+            return
+        emoji = {'в обработке': '🟡', 'оплачена': '🟢', 'выполнена': '✅', 'отменена': '❌'}.get(order['status'], '⚪')
         text = f"📄 Заявка #{order['id']}\n👤 @{order['username']}\n💰 Сумма: {order['total']}$\n📌 Статус: {emoji} {order['status']}\n\nВыберите новый статус:"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🟡 В обработке", callback_data=f"set_status_{order_id}_в обработке")],
@@ -324,7 +336,9 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("set_status_"))
     async def set_status(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         parts = cb.data.split("_")
         order_id = int(parts[2])
         new_status = "_".join(parts[3:])
@@ -334,55 +348,84 @@ async def register_handlers(dp: Dispatcher):
         if order:
             try:
                 await cb.bot.send_message(order['user_id'], f"📢 Статус вашей заявки #{order_id} изменён на: {new_status}")
-            except: pass
+            except:
+                pass
         orders = get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(orders))
 
     @dp.callback_query(F.data == "admin_list")
     async def admin_list(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await load_channels()
-        if not channels: await cb.message.edit_text("📭 Список каналов пуст.", reply_markup=get_back_keyboard()); await cb.answer(); return
+        if not channels:
+            await cb.message.edit_text("📭 Список каналов пуст.", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
         await cb.message.edit_text("📋 Список каналов\n\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("admin_view_"))
     async def admin_view_channel(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await load_channels()
         ch_id = cb.data.replace("admin_view_", "")
         ch = channels.get(ch_id)
-        if not ch: await cb.answer("Канал не найден", show_alert=True); return
-        text = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}\n🆔 {ch_id}"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{ch_id}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
+        if not ch:
+            await cb.answer("Канал не найден", show_alert=True)
+            return
+        text = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description', 'Нет описания')}\n🆔 {ch_id}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{ch_id}")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]
+        ])
         await cb.message.edit_text(text, reply_markup=kb)
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("edit_channel_"))
     async def edit_channel_menu(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         ch_id = cb.data.replace("edit_channel_", "")
         await load_channels()
-        if ch_id not in channels: await cb.answer("Канал не найден", show_alert=True); return
+        if ch_id not in channels:
+            await cb.answer("Канал не найден", show_alert=True)
+            return
         await cb.message.edit_text(f"Редактирование канала {channels[ch_id]['name']}\nВыберите, что изменить:", reply_markup=get_edit_channel_keyboard(ch_id))
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("edit_") & ~F.data.startswith("edit_channel_"))
     async def edit_channel_field(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
-        parts = cb.data.split("_",2)
-        if len(parts)<3: await cb.answer("Ошибка", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        parts = cb.data.split("_", 2)
+        if len(parts) < 3:
+            await cb.answer("Ошибка", show_alert=True)
+            return
         ch_id, field = parts[1], parts[2]
         await load_channels()
-        if ch_id not in channels: await cb.answer("Канал не найден", show_alert=True); return
+        if ch_id not in channels:
+            await cb.answer("Канал не найден", show_alert=True)
+            return
         await state.update_data(ch_id=ch_id, field=field)
-        prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новый охват (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
-        await cb.message.edit_text(prompts.get(field,"Введите значение:"))
-        if field=='name': await state.set_state(EditChannelStates.waiting_for_name)
-        elif field=='price': await state.set_state(EditChannelStates.waiting_for_price)
-        elif field=='subscribers': await state.set_state(EditChannelStates.waiting_for_subscribers)
-        elif field=='url': await state.set_state(EditChannelStates.waiting_for_url)
-        elif field=='description': await state.set_state(EditChannelStates.waiting_for_description)
+        prompts = {'name': 'Введите новое название:', 'price': 'Введите новую цену (число):', 'subscribers': 'Введите новый охват (число):',
+                   'url': 'Введите новую ссылку (https://t.me/...):', 'description': 'Введите новое описание:'}
+        await cb.message.edit_text(prompts.get(field, "Введите значение:"))
+        if field == 'name':
+            await state.set_state(EditChannelStates.waiting_for_name)
+        elif field == 'price':
+            await state.set_state(EditChannelStates.waiting_for_price)
+        elif field == 'subscribers':
+            await state.set_state(EditChannelStates.waiting_for_subscribers)
+        elif field == 'url':
+            await state.set_state(EditChannelStates.waiting_for_url)
+        elif field == 'description':
+            await state.set_state(EditChannelStates.waiting_for_description)
         await cb.answer()
 
     @dp.message(EditChannelStates.waiting_for_name)
@@ -396,7 +439,9 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(EditChannelStates.waiting_for_price)
     async def edit_price(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         data = await state.get_data()
         update_channel(data['ch_id'], price=int(m.text))
         await load_channels()
@@ -406,7 +451,9 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(EditChannelStates.waiting_for_subscribers)
     async def edit_subs(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         data = await state.get_data()
         update_channel(data['ch_id'], subscribers=int(m.text))
         await load_channels()
@@ -417,7 +464,9 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(EditChannelStates.waiting_for_url)
     async def edit_url(m: Message, state: FSMContext):
         url = m.text.strip()
-        if not url.startswith("https://t.me/"): await m.answer("Ссылка должна начинаться с https://t.me/"); return
+        if not url.startswith("https://t.me/"):
+            await m.answer("Ссылка должна начинаться с https://t.me/")
+            return
         data = await state.get_data()
         update_channel(data['ch_id'], url=url)
         await load_channels()
@@ -436,15 +485,22 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "admin_remove")
     async def admin_remove_menu(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await load_channels()
-        if not channels: await cb.message.edit_text("Нет каналов для удаления.", reply_markup=get_back_keyboard()); await cb.answer(); return
+        if not channels:
+            await cb.message.edit_text("Нет каналов для удаления.", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
         await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("admin_del_"))
     async def admin_delete_channel(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         ch_id = cb.data.replace("admin_del_", "")
         await load_channels()
         if ch_id in channels:
@@ -452,13 +508,18 @@ async def register_handlers(dp: Dispatcher):
             delete_channel(ch_id)
             await load_channels()
             await cb.answer(f"✅ Канал {name} удалён", show_alert=False)
-            if not channels: await cb.message.edit_text("Все каналы удалены.", reply_markup=get_back_keyboard())
-            else: await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
-        else: await cb.answer("Канал не найден", show_alert=True)
+            if not channels:
+                await cb.message.edit_text("Все каналы удалены.", reply_markup=get_back_keyboard())
+            else:
+                await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
+        else:
+            await cb.answer("Канал не найден", show_alert=True)
 
     @dp.callback_query(F.data == "admin_add")
     async def admin_add_start(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await cb.message.edit_text("➕ Добавление канала\n\nВведите название:")
         await state.set_state(AddChannelStates.waiting_for_name)
         await cb.answer()
@@ -471,14 +532,18 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(AddChannelStates.waiting_for_price)
     async def add_price(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         await state.update_data(price=int(m.text))
         await m.answer("Введите охват (число):")
         await state.set_state(AddChannelStates.waiting_for_subscribers)
 
     @dp.message(AddChannelStates.waiting_for_subscribers)
     async def add_subs(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         await state.update_data(subscribers=int(m.text))
         await m.answer("Введите ссылку (https://t.me/...):")
         await state.set_state(AddChannelStates.waiting_for_url)
@@ -486,7 +551,9 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(AddChannelStates.waiting_for_url)
     async def add_url(m: Message, state: FSMContext):
         url = m.text.strip()
-        if not url.startswith("https://t.me/"): await m.answer("Ссылка должна начинаться с https://t.me/"); return
+        if not url.startswith("https://t.me/"):
+            await m.answer("Ссылка должна начинаться с https://t.me/")
+            return
         await state.update_data(url=url)
         await m.answer("Введите описание канала:")
         await state.set_state(AddChannelStates.waiting_for_description)
@@ -495,7 +562,7 @@ async def register_handlers(dp: Dispatcher):
     async def add_desc(m: Message, state: FSMContext):
         data = await state.get_data()
         await load_channels()
-        new_id = f"channel_{len(channels)+1}"
+        new_id = f"channel_{len(channels) + 1}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], m.text)
         await load_channels()
         await m.answer(f"✅ Канал {data['name']} добавлен!")
@@ -513,7 +580,7 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         page = int(cb.data.split("_")[-1])
         kb, cur, total = get_catalog_keyboard(page)
-        await cb.message.edit_text(f"📢 Наши каналы (страница {cur+1}/{total})\n\nНажмите на канал для деталей:", reply_markup=kb)
+        await cb.message.edit_text(f"📢 Наши каналы (страница {cur + 1}/{total})\n\nНажмите на канал для деталей:", reply_markup=kb)
         await cb.answer()
 
     @dp.callback_query(F.data == "view_cart")
@@ -524,7 +591,7 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer()
             return
         total = sum(i['price'] for i in cart)
-        text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
+        text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i + 1}. {item['name']} — {item['price']}$" for i, item in enumerate(cart)) + f"\n\nИтого: {total}$"
         await cb.message.edit_text(text, reply_markup=get_cart_keyboard(cb.from_user.id))
         await cb.answer()
 
@@ -536,7 +603,7 @@ async def register_handlers(dp: Dispatcher):
         if not info:
             await cb.answer(f"Канал не найден (ID={ch_id})", show_alert=True)
             return
-        text = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
+        text = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description', 'Нет описания')}"
         await cb.message.edit_text(text, reply_markup=get_channel_view_keyboard(ch_id))
         await cb.answer()
 
@@ -571,9 +638,10 @@ async def register_handlers(dp: Dispatcher):
                 await cb.message.edit_text("🛒 Корзина пуста.", reply_markup=get_back_keyboard())
             else:
                 total = sum(i['price'] for i in cart)
-                text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
+                text = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i + 1}. {item['name']} — {item['price']}$" for i, item in enumerate(cart)) + f"\n\nИтого: {total}$"
                 await cb.message.edit_text(text, reply_markup=get_cart_keyboard(cb.from_user.id))
-        else: await cb.answer("Ошибка", show_alert=True)
+        else:
+            await cb.answer("Ошибка", show_alert=True)
 
     @dp.callback_query(F.data == "checkout")
     async def checkout(cb: CallbackQuery, state: FSMContext):
@@ -590,10 +658,12 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(OrderForm.waiting_for_budget)
     async def process_budget(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         budget = int(m.text)
         data = await state.get_data()
-        total = data.get("total",0)
+        total = data.get("total", 0)
         if budget < total:
             await m.answer(f"Бюджет ({budget}$) меньше суммы ({total}$). Введите {total}$ или больше:")
             return
@@ -604,17 +674,19 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(OrderForm.waiting_for_contact)
     async def process_contact(m: Message, state: FSMContext):
         data = await state.get_data()
-        cart = data.get("cart",[])
-        total = data.get("total",0)
-        budget = data.get("budget",0)
+        cart = data.get("cart", [])
+        total = data.get("total", 0)
+        budget = data.get("budget", 0)
         contact = m.text.strip()
         username = m.from_user.username or "не указан"
         order_id = save_order(m.from_user.id, username, cart, total, budget, contact, status='в обработке')
         items_list = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
         report = f"🟢 НОВАЯ ЗАЯВКА\n👤 @{username}\n📦 Состав:\n{items_list}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
         for admin_id in ADMIN_IDS:
-            try: await m.bot.send_message(admin_id, report)
-            except: pass
+            try:
+                await m.bot.send_message(admin_id, report)
+            except:
+                pass
         user_carts[m.from_user.id] = []
         await m.answer("✅ Заявка отправлена! Менеджер свяжется с вами.", reply_markup=get_main_keyboard())
         await state.clear()
@@ -642,32 +714,59 @@ async def register_handlers(dp: Dispatcher):
             return
         text = "📊 Ваши заявки:\n\n"
         for o in orders:
-            emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(o['status'],'⚪')
+            emoji = {'в обработке': '🟡', 'оплачена': '🟢', 'выполнена': '✅', 'отменена': '❌'}.get(o['status'], '⚪')
             text += f"🆔 №{o['id']}\n💰 Сумма: {o['total']}$\n📦 Товаров: {len(o['cart'])}\n📌 Статус: {emoji} {o['status']}\n🕒 {o['created_at']}\n➖➖➖➖➖\n"
         await cb.message.edit_text(text, reply_markup=get_back_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "about")
     async def about(cb: CallbackQuery):
-        await cb.message.edit_text("ℹ️ О сервисе ESVIG Service\n\nМы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\nРаботаем с 2026 года. Без скама и хайпов.", reply_markup=get_back_keyboard())
+        await cb.message.edit_text(
+            "ℹ️ О сервисе ESVIG Service\n\nМы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\nРаботаем с 2026 года. Без скама и хайпов.",
+            reply_markup=get_back_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "faq")
     async def faq(cb: CallbackQuery):
-        await cb.message.edit_text("❓ Часто задаваемые вопросы\n\n1️⃣ Как я могу оплатить рекламу?\n   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n2️⃣ Что если пост не выйдет?\n   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n3️⃣ Какой срок размещения?\n   Обычно пост выходит в течение 24 часов после оплаты.\n\n4️⃣ Могу ли я выбрать каналы сам?\n   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n5️⃣ Как узнать статистику поста?\n   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\n6️⃣ Как долго пост остаётся в канале?\n   Пост остаётся навсегда, если не указано иное.\n\n7️⃣ Есть ли скидки?\n   При заказе от 3 каналов – скидка 10%.\n\nПо остальным вопросам пишите @esvig_support.", reply_markup=get_back_keyboard())
+        await cb.message.edit_text(
+            "❓ Часто задаваемые вопросы\n\n"
+            "1️⃣ Как я могу оплатить рекламу?\n   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n"
+            "2️⃣ Что если пост не выйдет?\n   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n"
+            "3️⃣ Какой срок размещения?\n   Обычно пост выходит в течение 24 часов после оплаты.\n\n"
+            "4️⃣ Могу ли я выбрать каналы сам?\n   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n"
+            "5️⃣ Как узнать статистику поста?\n   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\n"
+            "6️⃣ Как долго пост остаётся в канале?\n   Пост остаётся навсегда, если не указано иное.\n\n"
+            "7️⃣ Есть ли скидки?\n   При заказе от 3 каналов – скидка 10%.\n\n"
+            "По остальным вопросам пишите @esvig_support.",
+            reply_markup=get_back_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "contacts")
     async def contacts(cb: CallbackQuery):
-        await cb.message.edit_text("📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Telegram: @esvig_support\n• Email: support@esvig.com\n• Канал с новостями: @esvig_news\n\nОбычно отвечаем в течение 1–2 часов.", reply_markup=get_back_keyboard())
+        await cb.message.edit_text(
+            "📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Telegram: @esvig_support\n• Email: support@esvig.com\n• Канал с новостями: @esvig_news\n\nОбычно отвечаем в течение 1–2 часов.",
+            reply_markup=get_back_keyboard())
         await cb.answer()
 
-# --- ЗАПУСК ВЕБХУКА (FLASK) ---
+# ---------- Flask приложение ----------
+flask_app = Flask(__name__)
+# Для gunicorn (Railway) добавляем алиас app
+app = flask_app
+
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
-flask_app = Flask(__name__)
 
-@flask_app.route('/webhook', methods=['POST'])
+_started = False
+
+@app.before_request
+async def ensure_startup():
+    global _started
+    if not _started:
+        await load_channels()
+        await register_handlers(dp_instance)
+        _started = True
+
+@app.route('/webhook', methods=['POST'])
 async def webhook():
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         return jsonify({'status': 'unauthorized'}), 401
@@ -675,18 +774,10 @@ async def webhook():
     await dp_instance.feed_update(bot_instance, update)
     return jsonify({'status': 'ok'})
 
-@flask_app.route('/set_webhook', methods=['GET'])
-async def set_webhook():
-    webhook_url = f"https://{flask_app.config.get('SERVER_NAME', request.host)}/webhook"
-    result = await bot_instance.set_webhook(url=webhook_url, secret_token=SECRET_TOKEN)
-    return jsonify({'status': 'ok', 'result': result})
-
-_started = False
-@flask_app.before_request
-async def ensure_startup():
-    global _started
-    if not _started:
-        await load_channels()
-        await register_handlers(dp_instance)
-        _started = True
-        
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook_sync():
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(bot_instance.set_webhook(url=f"https://{app.config.get('SERVER_NAME', request.host)}/webhook", secret_token=SECRET_TOKEN))
+    return jsonify({'status': 'ok', 'result': str(result)})
