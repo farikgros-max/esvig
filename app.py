@@ -20,6 +20,9 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
 
+# Временное хранилище для подтверждения очистки статистики
+clear_stats_confirm = {}
+
 def escape_md(text):
     if not text: return ""
     esc = r'_*[]()~`>#+-=|{}.!'
@@ -100,10 +103,13 @@ def get_orders(limit=20):
     conn.close()
     return orders
 
-def get_orders_by_user(user_id, limit=5):
+def get_orders_by_user(user_id, limit=5, only_completed=False):
     conn = sqlite3.connect('channels.db')
     c = conn.cursor()
-    c.execute('SELECT id, total, cart, status, created_at FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', (user_id, limit))
+    if only_completed:
+        c.execute('SELECT id, total, cart, status, created_at FROM orders WHERE user_id = ? AND status IN ("оплачена", "выполнена") ORDER BY created_at DESC LIMIT ?', (user_id, limit))
+    else:
+        c.execute('SELECT id, total, cart, status, created_at FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', (user_id, limit))
     rows = c.fetchall()
     orders = [{"id": r[0], "total": r[1], "cart": json.loads(r[2]), "status": r[3], "created_at": r[4]} for r in rows]
     conn.close()
@@ -123,6 +129,13 @@ def get_order_by_id(order_id):
     r = c.fetchone()
     conn.close()
     return {"id": r[0], "user_id": r[1], "username": r[2], "total": r[3], "status": r[4]} if r else None
+
+def clear_all_orders():
+    conn = sqlite3.connect('channels.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM orders')
+    conn.commit()
+    conn.close()
 
 init_db()
 
@@ -267,7 +280,9 @@ def get_profile_keyboard():
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
-        await m.answer("🤖 Добро пожаловать в ESVIG Service!\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\nИспользуйте кнопки ниже.", reply_markup=get_main_keyboard())
+        user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
+        text = f"Рад видеть тебя снова, {user_name}\n\nТвой баланс: 0$\nПриятных покупок!"
+        await m.answer(text, reply_markup=get_main_keyboard())
 
     @dp.message(Command("admin"))
     async def admin(m: Message):
@@ -305,6 +320,26 @@ async def register_handlers(dp: Dispatcher):
             txt += "\n📭 За последние 7 дней заявок нет."
         await m.answer(txt)
 
+    @dp.message(Command("clear_stats"))
+    async def clear_stats_cmd(m: Message):
+        if m.from_user.id not in ADMIN_IDS:
+            await m.answer("Нет прав")
+            return
+        clear_stats_confirm[m.from_user.id] = True
+        await m.answer("⚠️ Вы уверены, что хотите очистить всю статистику (удалить все заявки)?\nОтправьте /confirm_clear в течение 30 секунд.")
+
+    @dp.message(Command("confirm_clear"))
+    async def confirm_clear(m: Message):
+        if m.from_user.id not in ADMIN_IDS:
+            await m.answer("Нет прав")
+            return
+        if clear_stats_confirm.get(m.from_user.id):
+            clear_all_orders()
+            del clear_stats_confirm[m.from_user.id]
+            await m.answer("✅ Статистика успешно очищена (все заявки удалены).")
+        else:
+            await m.answer("Нет запроса на очистку. Используйте /clear_stats")
+
     @dp.message(F.text == "📋 Каталог каналов")
     async def cat(m: Message):
         await load_channels()
@@ -326,15 +361,16 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(F.text == "👤 Мой профиль")
     async def profile(m: Message):
-        orders = get_orders_by_user(m.from_user.id, 100)
-        tot_ord = len(orders)
-        tot_spent = sum(o['total'] for o in orders)
-        txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Всего заказов: {tot_ord}\n💰 Общая сумма трат: {tot_spent}$\n💳 Баланс: 0$ (пополнение временно недоступно)"
+        # Только завершённые (оплаченные или выполненные) заказы считаем как траты
+        completed_orders = get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
+        total_spent = sum(o['total'] for o in completed_orders)
+        total_orders = len(completed_orders)
+        txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: 0$ (пополнение временно недоступно)"
         await m.answer(txt, reply_markup=get_profile_keyboard())
 
     @dp.message(F.text == "ℹ️ О сервисе")
     async def about(m: Message):
-        txt = "ℹ️ О сервисе ESVIG Service\n\nМы помогаем рекламодателям размещать посты в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\n📌 Работаем с 2026 года."
+        txt = "ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов\n\n📌 Работаем с 2026 года."
         await m.answer(txt)
 
     @dp.message(F.text == "❓ FAQ")
@@ -344,7 +380,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(F.text == "📞 Контакты")
     async def contacts(m: Message):
-        txt = "📞 Контакты\n\nПо всем вопросам обращайтесь:\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
+        txt = "📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
         await m.answer(txt)
 
     # ---------- Инлайн - админка, каталог, корзина ----------
@@ -674,7 +710,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
-        ords = get_orders_by_user(cb.from_user.id, 10)
+        ords = get_orders_by_user(cb.from_user.id, 10, only_completed=False)
         if not ords:
             await cb.message.edit_text("У вас пока нет заявок", reply_markup=get_back_keyboard())
             await cb.answer()
