@@ -51,7 +51,6 @@ class AddCategoryStates(StatesGroup):
 # ------------------ Глобальные ------------------
 channels = {}
 user_carts = {}
-current_sphere = 1
 
 def get_cart(uid):
     if uid not in user_carts:
@@ -304,7 +303,7 @@ async def register_handlers(dp: Dispatcher):
             [InlineKeyboardButton(text="✅ Да, полная очистка", callback_data="clear_all_yes")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_no")]
         ])
-        await cb.message.edit_text("⚠️ **Полная очистка**: будут удалены **все** заявки. Это действие необратимо.", reply_markup=kb, parse_mode="Markdown")
+        await cb.message.edit_text("⚠️ **Полная очистка**: будут удалены **все** заявки (и у вас, и у покупателей). Это действие необратимо.", reply_markup=kb, parse_mode="Markdown")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_failed_yes")
@@ -548,7 +547,7 @@ async def register_handlers(dp: Dispatcher):
         txt = "📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
         await m.answer(txt)
 
-    # ---------- Админ-панель ----------
+    # ---------- Админ-панель (каналы, заявки, категории) ----------
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -766,36 +765,38 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("➕ Добавление канала\n\nВведите название:", reply_markup=cancel_keyboard())
+        await cb.message.edit_text("➕ Добавление канала\n\nВведите название:")
         await state.set_state(AddChannelStates.waiting_for_name)
         await cb.answer()
 
     @dp.message(AddChannelStates.waiting_for_name)
     async def a_name(m: Message, state: FSMContext):
         await state.update_data(name=m.text)
-        await m.answer("Введите цену (число):", reply_markup=cancel_keyboard())
+        await m.answer("Введите цену (число):")
         await state.set_state(AddChannelStates.waiting_for_price)
 
     @dp.message(AddChannelStates.waiting_for_price)
     async def a_price(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(price=int(m.text))
-        await m.answer("Введите охват (число):", reply_markup=cancel_keyboard())
+        await m.answer("Введите охват (число):")
         await state.set_state(AddChannelStates.waiting_for_subscribers)
 
     @dp.message(AddChannelStates.waiting_for_subscribers)
     async def a_subs(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(subscribers=int(m.text))
-        await m.answer("Введите ссылку (https://t.me/...):", reply_markup=cancel_keyboard())
+        await m.answer("Введите ссылку (https://t.me/...):")
         await state.set_state(AddChannelStates.waiting_for_url)
 
     @dp.message(AddChannelStates.waiting_for_url)
     async def a_url(m: Message, state: FSMContext):
         url = m.text.strip()
-        if not url.startswith("https://t.me/"): await m.answer("Ссылка должна начинаться с https://t.me/"); return
+        if not url.startswith("https://t.me/"):
+            await m.answer("Ссылка должна начинаться с https://t.me/")
+            return
         await state.update_data(url=url)
-        await m.answer("Введите описание канала:", reply_markup=cancel_keyboard())
+        await m.answer("Введите описание канала:")
         await state.set_state(AddChannelStates.waiting_for_description)
 
     @dp.message(AddChannelStates.waiting_for_description)
@@ -809,12 +810,10 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         cat_id = int(cb.data.split("_")[3])
         data = await state.get_data()
-        # Получаем актуальное количество каналов из БД
         all_ch = get_all_channels()
-        next_id = len(all_ch) + 1
-        new_id = f"channel_{next_id}"
+        new_id = f"channel_{len(all_ch)+1}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-        await load_channels()  # обновляем глобальную переменную
+        await load_channels()
         await cb.message.edit_text(f"✅ Канал {data['name']} добавлен!")
         await state.clear()
         await cb.message.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
