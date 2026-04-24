@@ -1,4 +1,3 @@
-python
 import os
 import asyncio
 import json
@@ -538,7 +537,6 @@ async def register_handlers(dp: Dispatcher):
         new_lang = 'en' if lang == 'ru' else 'ru'
         await set_user_language(cb.from_user.id, new_lang)
         await cb.answer(await _(cb.from_user.id, 'lang_switched', language=new_lang.upper()), False)
-        # обновляем профиль
         user = await get_or_create_user(cb.from_user.id)
         daily_limit, daily_used = await get_user_daily_info(cb.from_user.id)
         left = max(daily_limit - daily_used, 0)
@@ -1386,7 +1384,7 @@ async def register_handlers(dp: Dispatcher):
     async def a_desc(m: Message, state: FSMContext):
         await state.update_data(description=m.text)
         data = await state.get_data()
-        new_id = f"channel_{int(time.time())}"
+        new_id = f"channel_{int(round(time.time()*1000))}"
         cat_id = data['category_id']
         await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
         await load_channels()
