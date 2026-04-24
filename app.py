@@ -388,18 +388,30 @@ async def register_handlers(dp: Dispatcher):
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_failed_yes")
-    async def clear_failed(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+async def clear_failed(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Нет прав", show_alert=True)
+        return
+    try:
         await clear_non_successful_orders()
         await cb.message.edit_text("✅ Неуспешные заявки удалены.")
-        await cb.answer()
+    except Exception as e:
+        print(f"Ошибка очистки: {e}")
+        await cb.message.edit_text("❌ Ошибка при очистке. Попробуйте позже.")
+    await cb.answer()
 
-    @dp.callback_query(F.data == "clear_all_yes")
-    async def clear_all(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+@dp.callback_query(F.data == "clear_all_yes")
+async def clear_all(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Нет прав", show_alert=True)
+        return
+    try:
         await clear_all_orders()
         await cb.message.edit_text("✅ Все заявки удалены.")
-        await cb.answer()
+    except Exception as e:
+        print(f"Ошибка очистки: {e}")
+        await cb.message.edit_text("❌ Ошибка при очистке. Попробуйте позже.")
+    await cb.answer()
 
     @dp.callback_query(F.data == "clear_no")
     async def clear_no(cb: CallbackQuery):
