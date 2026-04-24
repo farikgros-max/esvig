@@ -32,7 +32,7 @@ WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
-DAILY_ORDER_LIMIT = 4   # можно вынести в переменную окружения при желании
+DAILY_ORDER_LIMIT = 3   # максимум заявок в сутки на пользователя
 # ==================================
 
 class OrderForm(StatesGroup):
@@ -341,6 +341,7 @@ async def register_handlers(dp: Dispatcher):
         else:
             await m.answer("Нет прав")
 
+    # Статистика (из админ‑панели)
     @dp.callback_query(F.data == "admin_stats")
     async def admin_stats_cb(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -365,6 +366,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
         await cb.answer()
 
+    # Ручное изменение баланса
     @dp.callback_query(F.data == "admin_balance")
     async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -423,7 +425,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.answer(report, reply_markup=get_admin_keyboard())
 
     # ========= Очистка статистики =========
-   @dp.callback_query(F.data == "confirm_clear_failed")
+    @dp.callback_query(F.data == "confirm_clear_failed")
     async def ask_clear_failed(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
@@ -475,12 +477,14 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "clear_no")
     async def clear_no(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await cb.message.delete()
         await cb.answer("Очистка отменена")
 
     # ========= Каталог =========
-     @dp.message(F.text == "📋 Каталог каналов")
+    @dp.message(F.text == "📋 Каталог каналов")
     async def catalog_start(m: Message):
         cats = await get_all_categories()
         if not cats:
@@ -707,6 +711,25 @@ async def register_handlers(dp: Dispatcher):
         total_orders = len(completed_orders)
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$\n📅 Осталось заявок сегодня: {left_orders}/{daily_limit}"
         await m.answer(txt, reply_markup=get_profile_keyboard())
+
+    @dp.callback_query(F.data == "transaction_history")
+    async def transaction_history(cb: CallbackQuery):
+        txs = await get_user_transactions(cb.from_user.id, limit=10)
+        if not txs:
+            await cb.answer("История пуста", True)
+            return
+        txt = "📊 Последние транзакции:\n\n"
+        type_emoji = {
+            "пополнение": "🔵",
+            "списание": "🔴",
+            "возврат": "🟢"
+        }
+        for tx in txs:
+            emoji = type_emoji.get(tx['type'], '⚪')
+            txt += f"{emoji} {tx['description']}\n   Сумма: {tx['amount']}$\n   Дата: {tx['created_at'].split('.')[0]}\n\n"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]])
+        await cb.message.edit_text(txt, reply_markup=kb)
+        await cb.answer()
 
     # ========= ПОПОЛНЕНИЕ БАЛАНСА =========
     @dp.callback_query(F.data == "deposit")
