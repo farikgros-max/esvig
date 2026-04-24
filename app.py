@@ -1474,7 +1474,7 @@ scheduler = AsyncIOScheduler()
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Удаляем вебхук и сбрасываем ВСЕ старые обновления, чтобы не было дублей
+    # Удаляем вебхук и сбрасываем все старые обновления, чтобы не было дублей
     await bot_instance.delete_webhook(drop_pending_updates=True)
     print("Бот готов")
     await dp_instance.start_polling(bot_instance)
@@ -1509,7 +1509,6 @@ def cryptobot_webhook():
                 except: pass
     return jsonify({'status': 'ok'})
 
-# --- Старт ---
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 loop.run_until_complete(startup())
