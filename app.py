@@ -390,7 +390,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data.startswith("view_"))
     async def view_channel(cb: CallbackQuery):
         cid = cb.data.replace("view_", "")
-        info = get_all_channels().get(cid)
+        info = channels.get(cid)
         if not info:
             await cb.answer("Канал не найден", True)
             return
@@ -416,6 +416,7 @@ async def register_handlers(dp: Dispatcher):
         cart.append({"id": cid, "name": info['name'], "price": info['price']})
         save_cart(cb.from_user.id, cart)
         await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
+
 
     # ----- Корзина, оформление, профиль -----
     @dp.message(F.text == "🛒 Корзина")
