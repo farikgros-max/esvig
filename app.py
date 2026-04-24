@@ -3,13 +3,12 @@ import asyncio
 import json
 import hashlib
 import hmac
-import time
 import asyncpg
 import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-                           Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, FSInputFile)
+                           Update, ReplyKeyboardMarkup, KeyboardButton, FSInputFile)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
