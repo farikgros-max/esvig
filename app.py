@@ -14,12 +14,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request, jsonify
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from database import (init_db, get_all_channels, add_channel, delete_channel, update_channel,
                       save_order, get_orders, get_orders_by_user, update_order_status,
                       get_order_by_id, clear_non_successful_orders, clear_all_orders,
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       close_db, get_or_create_user, update_user_balance, get_user_balance,
-                      debit_balance, return_balance, get_user_transactions)
+                      debit_balance, return_balance, get_user_transactions,
+                      update_channel_metrics_db)
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -100,6 +102,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
+        [InlineKeyboardButton(text="🔄 Обновить метрики", callback_data="admin_refresh_metrics")],
     ])
 
 async def get_categories_keyboard():
@@ -266,6 +269,42 @@ async def get_category_selection_keyboard(callback_prefix):
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+# ---------- ФУНКЦИЯ ОБНОВЛЕНИЯ МЕТРИК ----------
+async def update_channel_metrics(bot: Bot, ch_id, ch_url):
+    """Обновляет подписчиков и ER для одного канала."""
+    try:
+        # Пытаемся получить ID чата по ссылке (например, @username)
+        chat = await bot.get_chat(ch_url.replace("https://t.me/", "@").replace("https://telegram.me/", "@"))
+        subs = await bot.get_chat_members_count(chat.id)
+    except Exception as e:
+        print(f"Ошибка получения данных для канала {ch_id}: {e}")
+        return
+
+    # Пытаемся получить последние 5 постов для расчёта просмотров
+    views_list = []
+    try:
+        async for msg in bot.get_chat_history(chat.id, limit=5):
+            if msg.views:
+                views_list.append(msg.views)
+    except:
+        views_list = []
+
+    if views_list:
+        views_avg = sum(views_list) // len(views_list)
+    else:
+        views_avg = 0
+
+    er = (views_avg / subs * 100) if subs > 0 else 0.0
+
+    await update_channel_metrics_db(ch_id, subs, round(er, 2), views_avg)
+
+async def refresh_all_channels_metrics(bot: Bot):
+    """Обновляет метрики всех каналов."""
+    all_ch = await get_all_channels()
+    for ch_id, info in all_ch.items():
+        await update_channel_metrics(bot, ch_id, info['url'])
+    print("Метрики всех каналов обновлены.")
+
 # --- Обработчики ---
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
@@ -283,6 +322,16 @@ async def register_handlers(dp: Dispatcher):
             await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
         else:
             await m.answer("Нет прав")
+
+    # Ручное обновление метрик
+    @dp.callback_query(F.data == "admin_refresh_metrics")
+    async def admin_refresh_metrics(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        await cb.answer("🔄 Запущено обновление метрик...", False)
+        await refresh_all_channels_metrics(cb.bot)
+        await cb.message.answer("✅ Метрики всех каналов обновлены.")
 
     # Статистика (из админ‑панели)
     @dp.callback_query(F.data == "admin_stats")
@@ -513,6 +562,9 @@ async def register_handlers(dp: Dispatcher):
         txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
         if cat_name:
             txt += f"\n🏷 Категория: {cat_name}"
+        # Добавим ER если он есть
+        if info.get('er'):
+            txt += f"\n📊 ER: {info['er']}%"
         await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
         await cb.answer()
 
@@ -898,9 +950,11 @@ async def register_handlers(dp: Dispatcher):
             cat = await get_category_by_id(ch['category_id'])
             if cat:
                 cat_name = cat['display_name']
-        txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}\n🆔 {cid}"
+        txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}"
         if cat_name:
             txt += f"\n🏷 Категория: {cat_name}"
+        if ch.get('er'):
+            txt += f"\n📊 ER: {ch['er']}%"
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
         await cb.message.edit_text(txt, reply_markup=kb)
         await cb.answer()
@@ -1141,12 +1195,14 @@ async def register_handlers(dp: Dispatcher):
         ords = await get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
-# ------------------ Flask и CryptoBot Webhooks ------------------
+# ------------------ Flask, CryptoBot, Scheduler ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
+
+scheduler = AsyncIOScheduler()
 
 async def startup():
     await init_db()
@@ -1154,6 +1210,16 @@ async def startup():
     print("Бот готов")
     await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
     print(f"Webhook set to {WEBHOOK_URL}")
+
+    # Запускаем планировщик обновления метрик (каждые 6 часов)
+    scheduler.add_job(
+        refresh_all_channels_metrics,
+        'interval',
+        hours=6,
+        args=[bot_instance],
+        id='refresh_metrics'
+    )
+    scheduler.start()
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
