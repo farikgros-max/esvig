@@ -281,7 +281,7 @@ async def update_channel_metrics(bot: Bot, ch_id, ch_url):
             return f"skipped: приватная ссылка (не поддерживается) {username}"
 
         chat = await bot.get_chat(f"@{username}")
-        subs = await bot.get_chat_members_count(chat.id)
+        subs = await bot.get_chat_member_count(chat.id)   # <-- исправлено (без s)
     except Exception as e:
         err = str(e)
         if "chat not found" in err.lower():
