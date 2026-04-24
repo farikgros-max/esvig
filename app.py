@@ -21,7 +21,7 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       close_db, get_or_create_user, update_user_balance, get_user_balance,
                       debit_balance, return_balance, get_user_transactions,
-                      update_channel_metrics_db)
+                      update_channel_metrics_db, check_daily_order_limit, get_user_daily_info)
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -32,6 +32,7 @@ WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
+DAILY_ORDER_LIMIT = 4   # можно вынести в переменную окружения при желании
 # ==================================
 
 class OrderForm(StatesGroup):
@@ -94,7 +95,6 @@ def get_main_keyboard(user_id: int = None):
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def get_admin_keyboard():
-    # Кнопки по две в ряд
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list"),
          InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
@@ -328,12 +328,10 @@ async def register_handlers(dp: Dispatcher):
         user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
-        # Возвращаем фото (убедитесь, что welcome.jpg лежит в корне репозитория)
         try:
             photo = FSInputFile("welcome.jpg")
             await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
         except Exception:
-            # fallback – если файла нет, отправляем текст
             await m.answer(caption, reply_markup=get_main_keyboard(m.from_user.id))
 
     @dp.message(F.text == "🔑 Админ‑панель")
@@ -425,7 +423,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.answer(report, reply_markup=get_admin_keyboard())
 
     # ========= Очистка статистики =========
-    @dp.callback_query(F.data == "confirm_clear_failed")
+   @dp.callback_query(F.data == "confirm_clear_failed")
     async def ask_clear_failed(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
@@ -482,7 +480,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.answer("Очистка отменена")
 
     # ========= Каталог =========
-    @dp.message(F.text == "📋 Каталог каналов")
+     @dp.message(F.text == "📋 Каталог каналов")
     async def catalog_start(m: Message):
         cats = await get_all_categories()
         if not cats:
@@ -665,6 +663,15 @@ async def register_handlers(dp: Dispatcher):
         contact = m.text.strip()
         username = m.from_user.username or "не указан"
 
+        # Проверка дневного лимита
+        can_order = await check_daily_order_limit(m.from_user.id)
+        if not can_order:
+            user_info = await get_or_create_user(m.from_user.id)
+            await m.answer(f"❌ Вы исчерпали дневной лимит заявок ({user_info.get('daily_limit', DAILY_ORDER_LIMIT)}). Попробуйте завтра.")
+            await state.clear()
+            return
+
+        # Проверка баланса
         balance = await get_user_balance(m.from_user.id)
         if balance < total:
             await m.answer(f"❌ Недостаточно средств. Ваш баланс: {balance}$, сумма заказа: {total}$.\nПополните баланс в разделе «👤 Мой профиль» → «💰 Пополнить баланс».")
@@ -692,30 +699,14 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(F.text == "👤 Мой профиль")
     async def profile(m: Message):
         user = await get_or_create_user(m.from_user.id, m.from_user.username or "")
+        daily_limit, daily_used = await get_user_daily_info(m.from_user.id)
+        left_orders = max(daily_limit - daily_used, 0)
+
         completed_orders = await get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
         total_spent = sum(o['total'] for o in completed_orders)
         total_orders = len(completed_orders)
-        txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$"
+        txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$\n📅 Осталось заявок сегодня: {left_orders}/{daily_limit}"
         await m.answer(txt, reply_markup=get_profile_keyboard())
-
-    @dp.callback_query(F.data == "transaction_history")
-    async def transaction_history(cb: CallbackQuery):
-        txs = await get_user_transactions(cb.from_user.id, limit=10)
-        if not txs:
-            await cb.answer("История пуста", True)
-            return
-        txt = "📊 Последние транзакции:\n\n"
-        type_emoji = {
-            "пополнение": "🔵",
-            "списание": "🔴",
-            "возврат": "🟢"
-        }
-        for tx in txs:
-            emoji = type_emoji.get(tx['type'], '⚪')
-            txt += f"{emoji} {tx['description']}\n   Сумма: {tx['amount']}$\n   Дата: {tx['created_at'].split('.')[0]}\n\n"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]])
-        await cb.message.edit_text(txt, reply_markup=kb)
-        await cb.answer()
 
     # ========= ПОПОЛНЕНИЕ БАЛАНСА =========
     @dp.callback_query(F.data == "deposit")
