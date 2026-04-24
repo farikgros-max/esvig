@@ -4,7 +4,6 @@ import os
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Пул соединений, инициализируем при старте
 pool = None
 
 async def init_db():
@@ -14,7 +13,6 @@ async def init_db():
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
 
     async with pool.acquire() as conn:
-        # Таблицы и индексы создадутся, только если их нет
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS categories (
                 id SERIAL PRIMARY KEY,
@@ -43,7 +41,16 @@ async def init_db():
                 status TEXT DEFAULT 'в обработке',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-        # Стандартные категории, если их нет
+        # Новая таблица пользователей
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                balance INTEGER DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        # Стандартные категории
         exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
         if exists == 0:
             default_cats = [
@@ -65,7 +72,22 @@ async def close_db():
         await pool.close()
         pool = None
 
-# ------------------ Категории ------------------
+# ---------- Пользователи ----------
+async def get_or_create_user(user_id: int, username: str = None):
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+        if not user:
+            await conn.execute(
+                'INSERT INTO users (user_id, username, balance) VALUES ($1, $2, 0)',
+                user_id, username
+            )
+            return {'user_id': user_id, 'username': username, 'balance': 0}
+        # Обновить username, если изменился
+        if username and user['username'] != username:
+            await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
+        return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance']}
+
+# ---------- Категории ----------
 async def get_all_categories():
     async with pool.acquire() as conn:
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -85,7 +107,7 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ------------------ Каналы ------------------
+# ---------- Каналы ----------
 async def get_all_channels(category_id=None):
     async with pool.acquire() as conn:
         if category_id:
@@ -134,7 +156,7 @@ async def delete_channel(ch_id):
     async with pool.acquire() as conn:
         await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
 
-# ------------------ Заявки ------------------
+# ---------- Заявки ----------
 async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     async with pool.acquire() as conn:
         cart_json = json.dumps(cart)
@@ -150,7 +172,9 @@ async def get_orders(limit=20):
             'SELECT id, user_id, username, cart, total, budget, contact, status, created_at FROM orders ORDER BY created_at DESC LIMIT $1',
             limit
         )
-        return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'], "cart": json.loads(r['cart']), "total": r['total'], "budget": r['budget'], "contact": r['contact'], "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+        return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'], "cart": json.loads(r['cart']),
+                 "total": r['total'], "budget": r['budget'], "contact": r['contact'], "status": r['status'],
+                 "created_at": str(r['created_at'])} for r in rows]
 
 async def get_orders_by_user(user_id, limit=5, only_completed=False):
     async with pool.acquire() as conn:
@@ -164,7 +188,8 @@ async def get_orders_by_user(user_id, limit=5, only_completed=False):
                 'SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
                 user_id, limit
             )
-        return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']), "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+        return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']), "status": r['status'],
+                 "created_at": str(r['created_at'])} for r in rows]
 
 async def update_order_status(order_id, new_status):
     async with pool.acquire() as conn:
@@ -172,8 +197,11 @@ async def update_order_status(order_id, new_status):
 
 async def get_order_by_id(order_id):
     async with pool.acquire() as conn:
-        r = await conn.fetchrow('SELECT id, user_id, username, total, status FROM orders WHERE id = $1', order_id)
-        return {"id": r['id'], "user_id": r['user_id'], "username": r['username'], "total": r['total'], "status": r['status']} if r else None
+        r = await conn.fetchrow('SELECT id, user_id, username, total, status, cart FROM orders WHERE id = $1', order_id)
+        if r:
+            return {"id": r['id'], "user_id": r['user_id'], "username": r['username'], "total": r['total'],
+                    "status": r['status'], "cart": json.loads(r['cart'])}
+        return None
 
 async def clear_non_successful_orders():
     async with pool.acquire() as conn:
