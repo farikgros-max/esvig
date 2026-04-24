@@ -36,12 +36,12 @@ class OrderForm(StatesGroup):
     waiting_for_contact = State()
 
 class AddChannelStates(StatesGroup):
+    waiting_for_category = State()
     waiting_for_name = State()
     waiting_for_price = State()
     waiting_for_subscribers = State()
     waiting_for_url = State()
     waiting_for_description = State()
-    waiting_for_category = State()
 
 class EditChannelStates(StatesGroup):
     waiting_for_name = State()
@@ -67,7 +67,7 @@ def save_cart(uid, cart):
     user_carts[uid] = cart
 
 async def load_channels(category_id=None):
-    global channels  # ← обязательно, чтобы обновить глобальный словарь
+    global channels
     channels = get_all_channels(category_id)
     print(f"Загружено {len(channels)} каналов" + (f" для категории {category_id}" if category_id else ""))
 
@@ -525,7 +525,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "deposit")
     async def dep(cb: CallbackQuery):
-        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкорее мы добавим эту возможность.", reply_markup=get_main_keyboard())
+        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкоро мы добавим эту возможность.", reply_markup=get_main_keyboard())
         await cb.answer()
 
     @dp.message(F.text == "ℹ️ О сервисе")
@@ -680,7 +680,7 @@ async def register_handlers(dp: Dispatcher):
         update_channel(cid, category_id=cat_id)
         await load_channels()
         await cb.answer("Категория обновлена", False)
-        await adm_view_chan(cb)   # обновлённый показ канала
+        await adm_view_chan(cb)
         await state.clear()
 
     @dp.message(EditChannelStates.waiting_for_name)
@@ -759,10 +759,22 @@ async def register_handlers(dp: Dispatcher):
         else:
             await cb.answer("Канал не найден", True)
 
+    # ========== ДОБАВЛЕНИЕ КАНАЛА (новый порядок) ==========
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("➕ Добавление канала\n\nВведите название:", reply_markup=cancel_keyboard())
+        await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=get_category_selection_keyboard("add_chan_cat"))
+        await state.set_state(AddChannelStates.waiting_for_category)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("add_chan_cat_"), AddChannelStates.waiting_for_category)
+    async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", True)
+            return
+        cat_id = int(cb.data.split("_")[3])
+        await state.update_data(category_id=cat_id)
+        await cb.message.edit_text("Введите название канала:", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_name)
         await cb.answer()
 
@@ -803,25 +815,17 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(AddChannelStates.waiting_for_description)
     async def a_desc(m: Message, state: FSMContext):
         await state.update_data(description=m.text)
-        await m.answer("Выберите категорию канала:", reply_markup=get_category_selection_keyboard("add_chan_cat"))
-        await state.set_state(AddChannelStates.waiting_for_category)
-
-    @dp.callback_query(F.data.startswith("add_chan_cat_"))
-    async def add_channel_category_selected(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", True)
-            return
-        cat_id = int(cb.data.split("_")[3])
         data = await state.get_data()
         new_id = f"channel_{int(time.time())}"
+        cat_id = data['category_id']
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-        await load_channels()                # обновит глобальный channels
+        await load_channels()
         cat = get_category_by_id(cat_id)
         cat_name = cat['display_name'] if cat else ""
-        await cb.message.edit_text(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!")
+        await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
         await state.clear()
-        await cb.message.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
 
+    # ========== ЗАЯВКИ ==========
     @dp.callback_query(F.data == "admin_orders")
     async def adm_orders(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
