@@ -6,6 +6,7 @@ DB_NAME = 'channels.db'
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    # Таблица каналов с полем category
     c.execute('''
         CREATE TABLE IF NOT EXISTS channels (
             id TEXT PRIMARY KEY,
@@ -13,9 +14,16 @@ def init_db():
             price INTEGER NOT NULL,
             subscribers INTEGER NOT NULL,
             url TEXT NOT NULL,
-            description TEXT DEFAULT ''
+            description TEXT DEFAULT '',
+            category TEXT DEFAULT ''
         )
     ''')
+    # Добавляем колонку category, если её нет
+    c.execute("PRAGMA table_info(channels)")
+    cols = [col[1] for col in c.fetchall()]
+    if 'category' not in cols:
+        c.execute('ALTER TABLE channels ADD COLUMN category TEXT DEFAULT ""')
+    
     c.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,10 +44,13 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_all_channels():
+def get_all_channels(category=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT id, name, price, subscribers, url, description FROM channels')
+    if category:
+        c.execute('SELECT id, name, price, subscribers, url, description, category FROM channels WHERE category = ?', (category,))
+    else:
+        c.execute('SELECT id, name, price, subscribers, url, description, category FROM channels')
     rows = c.fetchall()
     ch = {}
     for r in rows:
@@ -48,19 +59,23 @@ def get_all_channels():
             "price": r[2],
             "subscribers": r[3],
             "url": r[4],
-            "description": r[5] or ""
+            "description": r[5] or "",
+            "category": r[6] or ""
         }
     conn.close()
     return ch
 
-def add_channel(ch_id, name, price, subscribers, url, desc=""):
+def add_channel(ch_id, name, price, subscribers, url, desc="", category=""):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO channels VALUES (?,?,?,?,?,?)', (ch_id, name, price, subscribers, url, desc))
+    c.execute('''
+        INSERT OR REPLACE INTO channels (id, name, price, subscribers, url, description, category)
+        VALUES (?,?,?,?,?,?,?)
+    ''', (ch_id, name, price, subscribers, url, desc, category))
     conn.commit()
     conn.close()
 
-def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None):
+def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     if name is not None: c.execute('UPDATE channels SET name = ? WHERE id = ?', (name, ch_id))
@@ -68,6 +83,7 @@ def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None)
     if subs is not None: c.execute('UPDATE channels SET subscribers = ? WHERE id = ?', (subs, ch_id))
     if url is not None: c.execute('UPDATE channels SET url = ? WHERE id = ?', (url, ch_id))
     if desc is not None: c.execute('UPDATE channels SET description = ? WHERE id = ?', (desc, ch_id))
+    if category is not None: c.execute('UPDATE channels SET category = ? WHERE id = ?', (category, ch_id))
     conn.commit()
     conn.close()
 
@@ -78,6 +94,7 @@ def delete_channel(ch_id):
     conn.commit()
     conn.close()
 
+# Все остальные функции (orders) без изменений
 def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
