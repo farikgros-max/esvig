@@ -68,7 +68,7 @@ async def load_channels(category_id=None):
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
-# --- Клавиатуры (часть функций теперь асинхронны) ---
+# --- Клавиатуры ---
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -252,8 +252,6 @@ async def register_handlers(dp: Dispatcher):
         if m.from_user.id not in ADMIN_IDS:
             await m.answer("Нет прав")
             return
-        # Для статистики используем SQL – теперь нужно получать данные из PostgreSQL
-        # В новом database.py можно добавить функцию get_stats(), но пока используем прямые запросы
         import asyncpg
         conn = await asyncpg.connect(os.environ["DATABASE_URL"])
         tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
@@ -887,22 +885,16 @@ app = flask_app
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-async def main():
-    await init_db()  # создаст таблицы в PostgreSQL
+async def startup():
+    await init_db()
     await register_handlers(dp_instance)
     print("Бот готов")
-
-    # Webhook setup
     webhook_url = "https://esvig-production.up.railway.app/webhook"
     await bot_instance.set_webhook(webhook_url, secret_token=SECRET_TOKEN)
     print(f"Webhook set to {webhook_url}")
 
-    # Graceful shutdown handler (необязательно)
-    try:
-        # Keep the loop running (Flask will run in separate thread)
-        await asyncio.Event().wait()
-    finally:
-        await close_db()
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(startup())
 
-if __name__ == "__main__":
-    asyncio.run(main())
+application = app
