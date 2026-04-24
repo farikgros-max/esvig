@@ -505,8 +505,7 @@ async def register_handlers(dp: Dispatcher):
     async def my_ords(cb: CallbackQuery):
         ords = get_orders_by_user(cb.from_user.id, 10, only_completed=False)
         if not ords:
-            await cb.message.delete()
-            await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
+            await cb.message.edit_text("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
             await cb.answer()
             return
         txt = "📊 Ваши заявки:\n\n"
@@ -804,14 +803,21 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", True)
             return
-        cat_id = int(cb.data.split("_")[3])
+        # Извлекаем cat_id
+        try:
+            cat_id = int(cb.data.split("_")[3])
+        except (IndexError, ValueError):
+            await cb.answer("Ошибка: неверный формат категории", True)
+            return
         data = await state.get_data()
-        all_ch = get_all_channels()
+        if not data:
+            await cb.answer("Ошибка: данные канала не найдены", True)
+            return
         new_id = f"channel_{int(time.time())}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
         await load_channels()
         cat = get_category_by_id(cat_id)
-        cat_name = cat['display_name'] if cat else ""
+        cat_name = cat['display_name'] if cat else "неизвестная"
         await cb.message.edit_text(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!")
         await state.clear()
         await cb.message.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
