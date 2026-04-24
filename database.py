@@ -48,7 +48,6 @@ async def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-        # Новая таблица транзакций
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -59,7 +58,6 @@ async def init_db():
                 description TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-        # Стандартные категории
         exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
         if exists == 0:
             default_cats = [
@@ -81,7 +79,7 @@ async def close_db():
         await pool.close()
         pool = None
 
-# ---------- Пользователи ----------
+# ---------- Пользователи и баланс ----------
 async def get_or_create_user(user_id: int, username: str = None):
     async with pool.acquire() as conn:
         user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
@@ -95,9 +93,8 @@ async def get_or_create_user(user_id: int, username: str = None):
             await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
         return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance']}
 
-# ---------- Пополнение баланса ----------
 async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
-    """Добавляет сумму к балансу пользователя и записывает транзакцию."""
+    """Пополнение баланса (положительная сумма)."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -109,18 +106,51 @@ async def update_user_balance(user_id: int, amount: int, description: str = "П�
                 user_id, amount, description
             )
 
-async def create_transaction(user_id, tx_type, amount, order_id=None, description=""):
+async def debit_balance(user_id: int, amount: int, order_id: int, description: str = "Списание за заказ"):
+    """Списание средств (проверка баланса внутри транзакции). Возвращает True при успехе."""
     async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1,$2,$3,$4,$5)",
-            user_id, tx_type, amount, order_id, description
-        )
+        async with conn.transaction():
+            cur_balance = await conn.fetchval(
+                'SELECT balance FROM users WHERE user_id = $1 FOR UPDATE', user_id
+            )
+            if cur_balance is None or cur_balance < amount:
+                return False
+            await conn.execute(
+                'UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'списание', $2, $3, $4)",
+                user_id, amount, order_id, description
+            )
+            return True
+
+async def return_balance(user_id: int, amount: int, order_id: int, description: str = "Возврат за отмену заказа"):
+    """Возврат средств (зачисление)."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'возврат', $2, $3, $4)",
+                user_id, amount, order_id, description
+            )
 
 async def get_user_balance(user_id):
     async with pool.acquire() as conn:
         return await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id) or 0
 
-# ---------- Категории ---------- (без изменений)
+async def get_user_transactions(user_id, limit=10):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT type, amount, description, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+            user_id, limit
+        )
+        return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
+
+# ---------- Категории, каналы, заказы (без изменений, только async) ----------
 async def get_all_categories():
     async with pool.acquire() as conn:
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -140,7 +170,6 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы ---------- (без изменений)
 async def get_all_channels(category_id=None):
     async with pool.acquire() as conn:
         if category_id:
@@ -189,8 +218,7 @@ async def delete_channel(ch_id):
     async with pool.acquire() as conn:
         await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
 
-# ---------- Заявки ---------- (без изменений)
-async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
+async def save_order(user_id, username, cart, total, budget, contact, status='оплачена'):
     async with pool.acquire() as conn:
         cart_json = json.dumps(cart)
         oid = await conn.fetchval(
