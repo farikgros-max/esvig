@@ -24,7 +24,7 @@ ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 84725487
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ВАЖНО: правильный домен Railway
-WEBHOOK_URL = "https://esvig-production.up.railway.app/webhook"
+WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 # ==================================
 
 class OrderForm(StatesGroup):
