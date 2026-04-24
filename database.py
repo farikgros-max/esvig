@@ -94,7 +94,6 @@ async def get_or_create_user(user_id: int, username: str = None):
         return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance']}
 
 async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
-    """Пополнение баланса (положительная сумма)."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -107,7 +106,6 @@ async def update_user_balance(user_id: int, amount: int, description: str = "П�
             )
 
 async def debit_balance(user_id: int, amount: int, order_id: int, description: str = "Списание за заказ"):
-    """Списание средств (проверка баланса внутри транзакции). Возвращает True при успехе."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             cur_balance = await conn.fetchval(
@@ -126,7 +124,6 @@ async def debit_balance(user_id: int, amount: int, order_id: int, description: s
             return True
 
 async def return_balance(user_id: int, amount: int, order_id: int, description: str = "Возврат за отмену заказа"):
-    """Возврат средств (зачисление)."""
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -267,7 +264,6 @@ async def get_order_by_id(order_id):
 # ---------- Очистка заказов (исправлено) ----------
 async def clear_non_successful_orders():
     async with pool.acquire() as conn:
-        # Сначала удаляем связанные транзакции
         await conn.execute(
             "DELETE FROM transactions WHERE order_id IN (SELECT id FROM orders WHERE status IN ('в обработке', 'отменена'))"
         )
@@ -275,6 +271,5 @@ async def clear_non_successful_orders():
 
 async def clear_all_orders():
     async with pool.acquire() as conn:
-        # Удаляем все транзакции, привязанные к заказам
         await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
         await conn.execute("DELETE FROM orders")
