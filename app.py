@@ -812,16 +812,13 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer("Нет прав", True)
             return
         cat_id = int(cb.data.split("_")[3])
-        # Проверяем, существует ли категория
         cat = get_category_by_id(cat_id)
         if not cat:
             await cb.answer("Категория не найдена", True)
             return
         data = await state.get_data()
-        # Генерируем уникальный ID канала (можно использовать timestamp)
         new_id = f"channel_{int(time.time())}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-        # Обновляем глобальный кэш channels
         await load_channels()
         await cb.message.edit_text(f"✅ Канал {data['name']} добавлен в категорию {cat['display_name']}!")
         await state.clear()
