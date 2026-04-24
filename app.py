@@ -1056,19 +1056,52 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=kb)
         await cb.answer()
 
+    # Обновлённый обработчик с возвратом денег при отмене админом и уведомлением при выполнении
     @dp.callback_query(F.data.startswith("set_status_"))
     async def set_st(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", True)
+            return
         parts = cb.data.split("_")
         oid = int(parts[2])
         new_st = "_".join(parts[3:])
+        order = await get_order_by_id(oid)
+        if not order:
+            await cb.answer("Заявка не найдена", True)
+            return
+
+        old_status = order['status']
+
+        # Если админ отменяет оплаченный заказ – делаем возврат
+        if new_st == 'отменена' and old_status == 'оплачена':
+            await return_balance(order['user_id'], order['total'], oid, f"Возврат за отмену заказа #{oid} админом")
+            try:
+                await cb.bot.send_message(
+                    order['user_id'],
+                    f"📢 Ваша заявка #{oid} была отменена администратором. Средства возвращены на баланс."
+                )
+            except:
+                pass
+            for aid in ADMIN_IDS:
+                if aid != cb.from_user.id:
+                    try:
+                        await cb.bot.send_message(aid, f"❌ Админ отменил заявку #{oid} (возврат {order['total']}$)")
+                    except:
+                        pass
+
         await update_order_status(oid, new_st)
         await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
-        ordd = await get_order_by_id(oid)
-        if ordd:
-            try:
-                await cb.bot.send_message(ordd['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
-            except: pass
+
+        # Уведомление пользователя при любом изменении статуса (включая "выполнена")
+        try:
+            await cb.bot.send_message(
+                order['user_id'],
+                f"📢 Статус вашей заявки #{oid} изменён на: {new_st}"
+            )
+        except:
+            pass
+
+        # Обновляем список заказов
         ords = await get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
