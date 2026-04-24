@@ -27,11 +27,14 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
+MIN_DEPOSIT = 0.1               # минимальная сумма в USDT
+PAID_BTN_URL = "https://t.me/esvig_bot"   # замените на юзернейм вашего бота
 # ==================================
 
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
     waiting_for_contact = State()
+    waiting_for_deposit_amount = State()
 
 class AddChannelStates(StatesGroup):
     waiting_for_category = State()
@@ -283,7 +286,6 @@ async def register_handlers(dp: Dispatcher):
         chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
         week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
         await conn.close()
-
         txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n"
         em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}
         for st, cnt in stat:
@@ -548,6 +550,68 @@ async def register_handlers(dp: Dispatcher):
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$"
         await m.answer(txt, reply_markup=get_profile_keyboard())
 
+    # ---------- ПОПОЛНЕНИЕ БАЛАНСА (свободный ввод) ----------
+    @dp.callback_query(F.data == "deposit")
+    async def deposit_start(cb: CallbackQuery, state: FSMContext):
+        await cb.message.edit_text(
+            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+            reply_markup=cancel_keyboard()
+        )
+        await state.set_state(OrderForm.waiting_for_deposit_amount)
+        await cb.answer()
+
+    @dp.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
+    async def cancel_deposit(cb: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await cb.message.edit_text("👤 Мой профиль", reply_markup=get_profile_keyboard())
+        await cb.answer()
+
+    @dp.message(OrderForm.waiting_for_deposit_amount)
+    async def process_deposit_amount(m: Message, state: FSMContext):
+        text = m.text.strip()
+        try:
+            amount = float(text)
+        except ValueError:
+            await m.answer("Пожалуйста, введите число (например, 0.5 или 10).")
+            return
+
+        if amount < MIN_DEPOSIT:
+            await m.answer(f"Минимальная сумма пополнения — {MIN_DEPOSIT} USDT. Попробуйте ещё раз.")
+            return
+
+        if not CRYPTO_BOT_TOKEN:
+            await m.answer("Платёжная система временно недоступна.")
+            await state.clear()
+            return
+
+        url = "https://pay.crypt.bot/api/createInvoice"
+        headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+        payload = {
+            "asset": "USDT",
+            "amount": str(amount),
+            "description": f"Пополнение баланса user_id:{m.from_user.id}",
+            "paid_btn_name": "callback",
+            "paid_btn_url": PAID_BTN_URL,
+            "hidden_message": f"Спасибо за пополнение, {m.from_user.first_name}!"
+        }
+        try:
+            r = requests.post(url, json=payload, headers=headers)
+            data = r.json()
+            if data.get("ok"):
+                invoice_url = data["result"]["pay_url"]
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                ])
+                await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+            else:
+                await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
+        except Exception as e:
+            print(e)
+            await m.answer("Ошибка связи с платёжной системой.", reply_markup=get_profile_keyboard())
+        finally:
+            await state.clear()
+
     # Список заказов с кнопками "Подробнее" и "Отменить"
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
@@ -620,56 +684,7 @@ async def register_handlers(dp: Dispatcher):
             except: pass
         await my_ords(cb)
 
-    # ---------- ПОПОЛНЕНИЕ БАЛАНСА ----------
-    @dp.callback_query(F.data == "deposit")
-    async def deposit_menu(cb: CallbackQuery):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💵 50$", callback_data="deposit_50"),
-             InlineKeyboardButton(text="💵 100$", callback_data="deposit_100")],
-            [InlineKeyboardButton(text="💵 200$", callback_data="deposit_200"),
-             InlineKeyboardButton(text="💵 500$", callback_data="deposit_500")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
-        ])
-        await cb.message.edit_text("Выберите сумму пополнения в USDT:", reply_markup=kb)
-        await cb.answer()
-
-    @dp.callback_query(F.data.startswith("deposit_"))
-    async def create_invoice(cb: CallbackQuery):
-        amount = int(cb.data.split("_")[1])
-        if not CRYPTO_BOT_TOKEN:
-            await cb.answer("Платёжная система временно недоступна", True)
-            return
-
-        # Создаём счёт в CryptoBot
-        url = "https://pay.crypt.bot/api/createInvoice"
-        headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
-        payload = {
-            "asset": "USDT",
-            "amount": str(amount),
-            "description": f"Пополнение баланса user_id:{cb.from_user.id}",
-            "paid_btn_name": "callback",
-            "paid_btn_url": "https://t.me/esvig_bot",  # замените на юзернейм вашего бота
-            "hidden_message": f"Спасибо за пополнение, {cb.from_user.first_name}!"
-        }
-        try:
-            r = requests.post(url, json=payload, headers=headers)
-            data = r.json()
-            if data.get("ok"):
-                invoice_url = data["result"]["pay_url"]
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
-                ])
-                await cb.message.edit_text(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
-            else:
-                await cb.message.edit_text("Ошибка при создании счёта. Попробуйте позже.", reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]]
-                ))
-        except Exception as e:
-            print(e)
-            await cb.answer("Ошибка связи с платёжной системой", True)
-
-    # Остальной текст: ℹ️ О сервисе, ❓ FAQ, 📞 Контакты
+    # Остальные тексты
     @dp.message(F.text == "ℹ️ О сервисе")
     async def about(m: Message):
         txt = "ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов"
@@ -1028,7 +1043,6 @@ async def startup():
     await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
     print(f"Webhook set to {WEBHOOK_URL}")
 
-# Вебхук для CryptoBot
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
     if not CRYPTO_BOT_TOKEN:
@@ -1071,10 +1085,8 @@ def cryptobot_webhook():
                     )
                 except:
                     pass
-
     return jsonify({'status': 'ok'})
 
-# Вебхук Telegram
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
