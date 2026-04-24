@@ -1474,8 +1474,8 @@ scheduler = AsyncIOScheduler()
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    await bot_instance.delete_webhook()          # сбросить вебхук
-    await bot_instance.get_updates()            # очистить накопившиеся обновления
+    # Удаляем вебхук и сбрасываем ВСЕ старые обновления, чтобы не было дублей
+    await bot_instance.delete_webhook(drop_pending_updates=True)
     print("Бот готов")
     await dp_instance.start_polling(bot_instance)
 
