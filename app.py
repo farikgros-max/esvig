@@ -1,7 +1,6 @@
 import os
 import asyncio
 import json
-import sqlite3
 import hashlib
 import re
 import requests
@@ -13,7 +12,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request, jsonify
-from database import init_db, get_all_channels, add_channel, delete_channel, update_channel, save_order, get_orders, get_orders_by_user, update_order_status, get_order_by_id, clear_non_successful_orders, clear_all_orders, get_all_categories, add_category, delete_category, get_category_by_id
+from database import (init_db, get_all_channels, add_channel, delete_channel, update_channel,
+                      save_order, get_orders, get_orders_by_user, update_order_status,
+                      get_order_by_id, clear_non_successful_orders, clear_all_orders,
+                      get_all_categories, add_category, delete_category, get_category_by_id,
+                      close_db)
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -21,15 +24,6 @@ ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 84725487
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
-
-# ---------- ВРЕМЕННОЕ УДАЛЕНИЕ БАЗЫ (ЗАКОММЕНТИРОВАНО) ----------
-# for f in ["channels.db", "channels.db-wal", "channels.db-shm"]:
-#     if os.path.exists(f):
-#         os.remove(f)
-#         print(f"Удалён файл: {f}")
-# --------------------------------------------------------------------
-
-init_db()
 
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
@@ -68,13 +62,13 @@ def save_cart(uid, cart):
 
 async def load_channels(category_id=None):
     global channels
-    channels = get_all_channels(category_id)
+    channels = await get_all_channels(category_id)
     print(f"Загружено {len(channels)} каналов" + (f" для категории {category_id}" if category_id else ""))
 
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
-# --- Клавиатуры ---
+# --- Клавиатуры (часть функций теперь асинхронны) ---
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -94,8 +88,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")]
     ])
 
-def get_categories_keyboard():
-    cats = get_all_categories()
+async def get_categories_keyboard():
+    cats = await get_all_categories()
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
     rows = []
@@ -200,8 +194,8 @@ def get_stats_keyboard():
         [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")]
     ])
 
-def get_categories_admin_keyboard():
-    cats = get_all_categories()
+async def get_categories_admin_keyboard():
+    cats = await get_all_categories()
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
@@ -224,8 +218,8 @@ def get_category_actions_keyboard(cat_id):
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_categories")]
     ])
 
-def get_category_selection_keyboard(callback_prefix):
-    cats = get_all_categories()
+async def get_category_selection_keyboard(callback_prefix):
+    cats = await get_all_categories()
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
     rows = []
@@ -258,18 +252,16 @@ async def register_handlers(dp: Dispatcher):
         if m.from_user.id not in ADMIN_IDS:
             await m.answer("Нет прав")
             return
-        conn = sqlite3.connect('channels.db')
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*), SUM(total) FROM orders")
-        tot_ord, tot_sum = c.fetchone()
-        tot_sum = tot_sum or 0
-        c.execute("SELECT status, COUNT(*) FROM orders GROUP BY status")
-        stat = c.fetchall()
-        c.execute("SELECT COUNT(*) FROM channels")
-        chan_cnt = c.fetchone()[0]
-        c.execute("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= DATE('now','-7 days') GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
-        week = c.fetchall()
-        conn.close()
+        # Для статистики используем SQL – теперь нужно получать данные из PostgreSQL
+        # В новом database.py можно добавить функцию get_stats(), но пока используем прямые запросы
+        import asyncpg
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
+        stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
+        chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
+        week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
+        await conn.close()
+
         txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n"
         em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}
         for st, cnt in stat:
@@ -312,7 +304,7 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
-        clear_non_successful_orders()
+        await clear_non_successful_orders()
         await cb.message.edit_text("✅ Неуспешные заявки удалены.")
         await cb.answer()
 
@@ -321,7 +313,7 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
-        clear_all_orders()
+        await clear_all_orders()
         await cb.message.edit_text("✅ Все заявки удалены.")
         await cb.answer()
 
@@ -336,11 +328,11 @@ async def register_handlers(dp: Dispatcher):
     # ----- Каталог -----
     @dp.message(F.text == "📋 Каталог каналов")
     async def catalog_start(m: Message):
-        cats = get_all_categories()
+        cats = await get_all_categories()
         if not cats:
             await m.answer("Категории не найдены")
             return
-        await m.answer("Выберите категорию:", reply_markup=get_categories_keyboard())
+        await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard())
 
     @dp.callback_query(F.data.startswith("category_select_"))
     async def select_category(cb: CallbackQuery):
@@ -361,12 +353,12 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "back_to_categories")
     async def back_to_categories(cb: CallbackQuery):
-        cats = get_all_categories()
+        cats = await get_all_categories()
         if not cats:
             await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
             return
-        await cb.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard())
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("view_catalog_page_"))
@@ -384,12 +376,12 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "back_to_catalog")
     async def back_to_catalog(cb: CallbackQuery):
-        cats = get_all_categories()
+        cats = await get_all_categories()
         if not cats:
             await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
             return
-        await cb.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard())
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "back_to_main_menu")
@@ -407,7 +399,7 @@ async def register_handlers(dp: Dispatcher):
             return
         cat_name = ""
         if info.get('category_id'):
-            cat = get_category_by_id(info['category_id'])
+            cat = await get_category_by_id(info['category_id'])
             if cat:
                 cat_name = cat['display_name']
         txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
@@ -427,7 +419,6 @@ async def register_handlers(dp: Dispatcher):
         cart.append({"id": cid, "name": info['name'], "price": info['price']})
         save_cart(cb.from_user.id, cart)
         await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
-
 
     # ----- Корзина, оформление, профиль -----
     @dp.message(F.text == "🛒 Корзина")
@@ -501,7 +492,7 @@ async def register_handlers(dp: Dispatcher):
         budget = d.get("budget",0)
         contact = m.text.strip()
         username = m.from_user.username or "не указан"
-        order_id = save_order(m.from_user.id, username, cart, total, budget, contact)
+        order_id = await save_order(m.from_user.id, username, cart, total, budget, contact)
         items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
         report = f"🟢 НОВАЯ ЗАЯВКА\n👤 @{username}\n📦 Состав:\n{items}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
         for aid in ADMIN_IDS:
@@ -514,7 +505,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(F.text == "👤 Мой профиль")
     async def profile(m: Message):
-        completed_orders = get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
+        completed_orders = await get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
         total_spent = sum(o['total'] for o in completed_orders)
         total_orders = len(completed_orders)
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: 0$ (пополнение временно недоступно)"
@@ -522,7 +513,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
-        ords = get_orders_by_user(cb.from_user.id, 10, only_completed=False)
+        ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
         if not ords:
             await cb.message.delete()
             await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
@@ -574,7 +565,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "admin_categories")
     async def admin_categories_menu(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("🏷 Управление категориями", reply_markup=get_categories_admin_keyboard())
+        await cb.message.edit_text("🏷 Управление категориями", reply_markup=await get_categories_admin_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "admin_add_category")
@@ -602,7 +593,7 @@ async def register_handlers(dp: Dispatcher):
         if not display:
             await m.answer("Название не может быть пустым")
             return
-        add_category(name, display)
+        await add_category(name, display)
         await m.answer(f"✅ Категория '{display}' добавлена", reply_markup=get_admin_keyboard())
         await state.clear()
 
@@ -610,7 +601,7 @@ async def register_handlers(dp: Dispatcher):
     async def admin_category_detail(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         cat_id = int(cb.data.split("_")[2])
-        cat = get_category_by_id(cat_id)
+        cat = await get_category_by_id(cat_id)
         if not cat:
             await cb.answer("Категория не найдена", True)
             return
@@ -621,7 +612,7 @@ async def register_handlers(dp: Dispatcher):
     async def admin_del_category(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         cat_id = int(cb.data.split("_")[3])
-        delete_category(cat_id)
+        await delete_category(cat_id)
         await cb.answer("Категория удалена", False)
         await admin_categories_menu(cb)
 
@@ -646,7 +637,7 @@ async def register_handlers(dp: Dispatcher):
         if not ch: await cb.answer("Канал не найден", True); return
         cat_name = ""
         if ch.get('category_id'):
-            cat = get_category_by_id(ch['category_id'])
+            cat = await get_category_by_id(ch['category_id'])
             if cat:
                 cat_name = cat['display_name']
         txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}\n🆔 {cid}"
@@ -675,7 +666,7 @@ async def register_handlers(dp: Dispatcher):
         if cid not in channels: await cb.answer("Канал не найден", True); return
         await state.update_data(ch_id=cid, field=field)
         if field == 'category':
-            await cb.message.edit_text("Выберите новую категорию:", reply_markup=get_category_selection_keyboard(f"edit_chan_cat_{cid}"))
+            await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(f"edit_chan_cat_{cid}"))
             await state.set_state(EditChannelStates.waiting_for_category)
         else:
             prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новый охват (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
@@ -693,7 +684,7 @@ async def register_handlers(dp: Dispatcher):
         parts = cb.data.split("_")
         cid = parts[3]
         cat_id = int(parts[4])
-        update_channel(cid, category_id=cat_id)
+        await update_channel(cid, category_id=cat_id)
         await load_channels()
         await cb.answer("Категория обновлена", False)
         await adm_view_chan(cb)
@@ -702,7 +693,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(EditChannelStates.waiting_for_name)
     async def e_name(m: Message, state: FSMContext):
         d = await state.get_data()
-        update_channel(d['ch_id'], name=m.text)
+        await update_channel(d['ch_id'], name=m.text)
         await load_channels()
         await m.answer(f"✅ Название изменено на {m.text}")
         await state.clear()
@@ -712,7 +703,7 @@ async def register_handlers(dp: Dispatcher):
     async def e_price(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         d = await state.get_data()
-        update_channel(d['ch_id'], price=int(m.text))
+        await update_channel(d['ch_id'], price=int(m.text))
         await load_channels()
         await m.answer(f"✅ Цена изменена на {m.text}$")
         await state.clear()
@@ -722,7 +713,7 @@ async def register_handlers(dp: Dispatcher):
     async def e_subs(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         d = await state.get_data()
-        update_channel(d['ch_id'], subscribers=int(m.text))
+        await update_channel(d['ch_id'], subscribers=int(m.text))
         await load_channels()
         await m.answer(f"✅ Охват изменён на {m.text}")
         await state.clear()
@@ -735,7 +726,7 @@ async def register_handlers(dp: Dispatcher):
             await m.answer("Ссылка должна начинаться с https://t.me/")
             return
         d = await state.get_data()
-        update_channel(d['ch_id'], url=url)
+        await update_channel(d['ch_id'], url=url)
         await load_channels()
         await m.answer(f"✅ Ссылка изменена на {url}")
         await state.clear()
@@ -744,7 +735,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(EditChannelStates.waiting_for_description)
     async def e_desc(m: Message, state: FSMContext):
         d = await state.get_data()
-        update_channel(d['ch_id'], description=m.text)
+        await update_channel(d['ch_id'], description=m.text)
         await load_channels()
         await m.answer("✅ Описание изменено")
         await state.clear()
@@ -769,7 +760,7 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         if cid in channels:
             name = channels[cid]['name']
-            delete_channel(cid)
+            await delete_channel(cid)
             await load_channels()
             await cb.answer(f"✅ Канал {name} удалён", False)
             if not channels:
@@ -784,7 +775,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=get_category_selection_keyboard("add_chan_cat"))
+        await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard("add_chan_cat"))
         await state.set_state(AddChannelStates.waiting_for_category)
         await cb.answer()
 
@@ -839,9 +830,9 @@ async def register_handlers(dp: Dispatcher):
         data = await state.get_data()
         new_id = f"channel_{int(time.time())}"
         cat_id = data['category_id']
-        add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
+        await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
         await load_channels()
-        cat = get_category_by_id(cat_id)
+        cat = await get_category_by_id(cat_id)
         cat_name = cat['display_name'] if cat else ""
         await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
         await state.clear()
@@ -850,7 +841,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "admin_orders")
     async def adm_orders(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        ords = get_orders(20)
+        ords = await get_orders(20)
         if not ords: await cb.message.edit_text("Нет заявок", reply_markup=get_main_keyboard()); await cb.answer(); return
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
         await cb.answer()
@@ -859,7 +850,7 @@ async def register_handlers(dp: Dispatcher):
     async def adm_view_order(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         oid = int(cb.data.split("_")[2])
-        ordd = get_order_by_id(oid)
+        ordd = await get_order_by_id(oid)
         if not ordd: await cb.answer("Заявка не найдена", True); return
         em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(ordd['status'],'⚪')
         txt = f"📄 Заявка #{ordd['id']}\n👤 @{ordd['username']}\n💰 Сумма: {ordd['total']}$\n📌 Статус: {em} {ordd['status']}\n\nВыберите новый статус:"
@@ -879,14 +870,14 @@ async def register_handlers(dp: Dispatcher):
         parts = cb.data.split("_")
         oid = int(parts[2])
         new_st = "_".join(parts[3:])
-        update_order_status(oid, new_st)
+        await update_order_status(oid, new_st)
         await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
-        ordd = get_order_by_id(oid)
+        ordd = await get_order_by_id(oid)
         if ordd:
             try:
                 await cb.bot.send_message(ordd['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
             except: pass
-        ords = get_orders(20)
+        ords = await get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
 # ------------------ Flask ------------------
@@ -896,36 +887,22 @@ app = flask_app
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-loop.run_until_complete(register_handlers(dp_instance))
-print("Бот готов")
+async def main():
+    await init_db()  # создаст таблицы в PostgreSQL
+    await register_handlers(dp_instance)
+    print("Бот готов")
 
-def set_webhook_on_startup():
+    # Webhook setup
     webhook_url = "https://esvig-production.up.railway.app/webhook"
+    await bot_instance.set_webhook(webhook_url, secret_token=SECRET_TOKEN)
+    print(f"Webhook set to {webhook_url}")
+
+    # Graceful shutdown handler (необязательно)
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
-            json={"url": webhook_url, "secret_token": SECRET_TOKEN}
-        )
-        print(f"Webhook set result: {r.json()}")
-    except Exception as e:
-        print(f"Error setting webhook: {e}")
+        # Keep the loop running (Flask will run in separate thread)
+        await asyncio.Event().wait()
+    finally:
+        await close_db()
 
-set_webhook_on_startup()
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
-        return jsonify({'status': 'unauthorized'}), 401
-    upd = Update(**request.json)
-    loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
-    return jsonify({'status': 'ok'})
-
-@app.route('/set_webhook', methods=['GET'])
-def set_wh():
-    wh_url = "https://esvig-production.up.railway.app/webhook"
-    r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook", json={"url": wh_url, "secret_token": SECRET_TOKEN})
-    return jsonify({'status': 'ok', 'result': r.json()})
-
-application = app
+if __name__ == "__main__":
+    asyncio.run(main())
