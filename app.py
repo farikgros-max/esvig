@@ -57,6 +57,10 @@ class AddCategoryStates(StatesGroup):
     waiting_for_name = State()
     waiting_for_display_name = State()
 
+class AdminBalanceStates(StatesGroup):
+    waiting_for_user_id = State()
+    waiting_for_amount = State()
+
 channels = {}
 user_carts = {}
 
@@ -77,15 +81,15 @@ def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
 # --- Клавиатуры ---
-def get_main_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
-            [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-            [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
-        ],
-        resize_keyboard=True
-    )
+def get_main_keyboard(user_id: int = None):
+    buttons = [
+        [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
+    ]
+    if user_id in ADMIN_IDS:
+        buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -93,7 +97,9 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
         [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add")],
         [InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
-        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")]
+        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
     ])
 
 async def get_categories_keyboard():
@@ -268,19 +274,21 @@ async def register_handlers(dp: Dispatcher):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
         photo = FSInputFile("welcome.jpg")
-        await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard())
+        await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
 
-    @dp.message(Command("admin"))
-    async def admin(m: Message):
+    # Кнопка "Админ‑панель" в главном меню
+    @dp.message(F.text == "🔑 Админ‑панель")
+    async def admin_panel_msg(m: Message):
         if m.from_user.id in ADMIN_IDS:
-            await m.answer("👑 Админ-панель", reply_markup=get_admin_keyboard())
+            await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
         else:
             await m.answer("Нет прав")
 
-    @dp.message(Command("stats"))
-    async def stats(m: Message):
-        if m.from_user.id not in ADMIN_IDS:
-            await m.answer("Нет прав")
+    # Статистика (из админ‑панели)
+    @dp.callback_query(F.data == "admin_stats")
+    async def admin_stats_cb(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
             return
         conn = await asyncpg.connect(os.environ["DATABASE_URL"])
         tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
@@ -298,9 +306,63 @@ async def register_handlers(dp: Dispatcher):
                 txt += f"{d}: {cnt} заявок, {s or 0}$\n"
         else:
             txt += "\n📭 За последние 7 дней заявок нет."
-        await m.answer(txt, reply_markup=get_stats_keyboard())
+        await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
+        await cb.answer()
 
-    # ----- Очистка статистики -----
+    # Ручное изменение баланса
+    @dp.callback_query(F.data == "admin_balance")
+    async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        await cb.message.edit_text("Введите Telegram ID пользователя, которому нужно изменить баланс:", reply_markup=cancel_keyboard())
+        await state.set_state(AdminBalanceStates.waiting_for_user_id)
+        await cb.answer()
+
+    @dp.callback_query(F.data == "cancel_add_channel", AdminBalanceStates.waiting_for_user_id)
+    async def cancel_balance_user(cb: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
+        await cb.answer()
+
+    @dp.message(AdminBalanceStates.waiting_for_user_id)
+    async def process_balance_user_id(m: Message, state: FSMContext):
+        if not m.text.isdigit():
+            await m.answer("Пожалуйста, введите числовой ID.")
+            return
+        target_id = int(m.text)
+        await state.update_data(target_id=target_id)
+        await m.answer(f"Введите сумму для изменения баланса (положительное – пополнение, отрицательное – списание):", reply_markup=cancel_keyboard())
+        await state.set_state(AdminBalanceStates.waiting_for_amount)
+
+    @dp.message(AdminBalanceStates.waiting_for_amount)
+    async def process_balance_amount(m: Message, state: FSMContext):
+        text = m.text.strip()
+        try:
+            amount = int(text)
+        except ValueError:
+            await m.answer("Введите целое число (например, 100 или -50).")
+            return
+
+        data = await state.get_data()
+        target_id = data['target_id']
+
+        await get_or_create_user(target_id)
+
+        if amount >= 0:
+            await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
+            msg = f"✅ Баланс пользователя {target_id} пополнен на {amount}$"
+        else:
+            success = await debit_balance(target_id, -amount, None, f"Ручное списание админом {m.from_user.id}")
+            if success:
+                msg = f"✅ С баланса пользователя {target_id} списано {-amount}$"
+            else:
+                msg = f"❌ Недостаточно средств для списания. Текущий баланс: {await get_user_balance(target_id)}$"
+
+        await m.answer(msg, reply_markup=get_admin_keyboard())
+        await state.clear()
+
+    # ========= Очистка статистики =========
     @dp.callback_query(F.data == "confirm_clear_failed")
     async def ask_clear_failed(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -327,31 +389,25 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "clear_failed_yes")
     async def clear_failed(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", show_alert=True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
         await clear_non_successful_orders()
         await cb.message.edit_text("✅ Неуспешные заявки удалены.")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_all_yes")
     async def clear_all(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", show_alert=True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
         await clear_all_orders()
         await cb.message.edit_text("✅ Все заявки удалены.")
         await cb.answer()
 
     @dp.callback_query(F.data == "clear_no")
     async def clear_no(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", show_alert=True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
         await cb.message.delete()
         await cb.answer("Очистка отменена")
 
-    # ----- Каталог -----
+    # ========= Каталог =========
     @dp.message(F.text == "📋 Каталог каналов")
     async def catalog_start(m: Message):
         cats = await get_all_categories()
@@ -427,7 +483,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "back_to_main_menu")
     async def back_main_menu(cb: CallbackQuery):
         await cb.message.delete()
-        await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard())
+        await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard(cb.from_user.id))
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("channel_view_"))
@@ -460,7 +516,7 @@ async def register_handlers(dp: Dispatcher):
         save_cart(cb.from_user.id, cart)
         await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
 
-    # ----- Корзина, оформление, профиль -----
+    # ========= Корзина, оформление, профиль =========
     @dp.message(F.text == "🛒 Корзина")
     async def cart(m: Message):
         c = get_cart(m.from_user.id)
@@ -476,7 +532,7 @@ async def register_handlers(dp: Dispatcher):
         user_carts[cb.from_user.id] = []
         await cb.answer("🗑 Корзина очищена", False)
         await cb.message.delete()
-        await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard())
+        await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
 
     @dp.callback_query(F.data.startswith("remove_"))
     async def remove_from_cart(cb: CallbackQuery):
@@ -488,7 +544,7 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer(f"❌ {removed['name']} удалён", False)
             if not cart:
                 await cb.message.delete()
-                await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard())
+                await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
             else:
                 total = sum(i['price'] for i in cart)
                 txt = "🛒 Ваша корзина:\n\n" + "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart)) + f"\n\nИтого: {total}$"
@@ -500,7 +556,7 @@ async def register_handlers(dp: Dispatcher):
     async def checkout_cb(cb: CallbackQuery, state: FSMContext):
         cart = get_cart(cb.from_user.id)
         if not cart:
-            await cb.message.edit_text("Корзина пуста", reply_markup=get_main_keyboard())
+            await cb.message.edit_text("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
             return
         total = sum(i['price'] for i in cart)
@@ -533,16 +589,13 @@ async def register_handlers(dp: Dispatcher):
         contact = m.text.strip()
         username = m.from_user.username or "не указан"
 
-        # Проверяем баланс
         balance = await get_user_balance(m.from_user.id)
         if balance < total:
             await m.answer(f"❌ Недостаточно средств. Ваш баланс: {balance}$, сумма заказа: {total}$.\nПополните баланс в разделе «👤 Мой профиль» → «💰 Пополнить баланс».")
             await state.clear()
             return
 
-        # Создаём заказ со статусом "оплачена"
         order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='оплачена')
-        # Списываем деньги
         success = await debit_balance(m.from_user.id, total, order_id, description=f"Оплата заказа #{order_id}")
         if not success:
             await update_order_status(order_id, 'отменена')
@@ -557,7 +610,7 @@ async def register_handlers(dp: Dispatcher):
                 await m.bot.send_message(aid, report)
             except: pass
         user_carts[m.from_user.id] = []
-        await m.answer(f"✅ Заказ #{order_id} оформлен и оплачен! Сумма {total}$ списана с баланса.\nМенеджер скоро свяжется с вами.", reply_markup=get_main_keyboard())
+        await m.answer(f"✅ Заказ #{order_id} оформлен и оплачен! Сумма {total}$ списана с баланса.\nМенеджер скоро свяжется с вами.", reply_markup=get_main_keyboard(m.from_user.id))
         await state.clear()
 
     @dp.message(F.text == "👤 Мой профиль")
@@ -569,7 +622,6 @@ async def register_handlers(dp: Dispatcher):
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$"
         await m.answer(txt, reply_markup=get_profile_keyboard())
 
-    # История транзакций
     @dp.callback_query(F.data == "transaction_history")
     async def transaction_history(cb: CallbackQuery):
         txs = await get_user_transactions(cb.from_user.id, limit=10)
@@ -589,7 +641,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=kb)
         await cb.answer()
 
-    # ---------- ПОПОЛНЕНИЕ БАЛАНСА ----------
+    # ========= ПОПОЛНЕНИЕ БАЛАНСА =========
     @dp.callback_query(F.data == "deposit")
     async def deposit_start(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text(
@@ -651,13 +703,13 @@ async def register_handlers(dp: Dispatcher):
         finally:
             await state.clear()
 
-    # Список заказов с кнопками "Подробнее" и "Отменить"
+    # ========= Мои заказы (с кнопками "Подробнее" и "Отменить") =========
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
         ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
         if not ords:
             await cb.message.delete()
-            await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
+            await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
             return
         txt = "📊 Ваши заявки:\n\n"
@@ -716,7 +768,6 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer("Статус изменился, отмена невозможна", True)
             return
 
-        # Меняем статус и возвращаем деньги
         await update_order_status(order_id, 'отменена')
         await return_balance(ordd['user_id'], ordd['total'], order_id, f"Возврат за отмену заказа #{order_id}")
 
@@ -727,7 +778,7 @@ async def register_handlers(dp: Dispatcher):
             except: pass
         await my_ords(cb)
 
-    # Текстовые сообщения
+    # ========= Текстовые сообщения =========
     @dp.message(F.text == "ℹ️ О сервисе")
     async def about(m: Message):
         txt = "ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов"
@@ -743,12 +794,10 @@ async def register_handlers(dp: Dispatcher):
         txt = "📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
         await m.answer(txt)
 
-    # ---------- Админ-панель ----------
+    # ========= Админ-панель (управление каналами, заявками) =========
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", show_alert=True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
         await state.clear()
         await cb.message.edit_text("👑 Админ-панель", reply_markup=get_admin_keyboard())
         await cb.answer()
@@ -819,7 +868,7 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         if not channels:
             await cb.message.delete()
-            await cb.message.answer("Список каналов пуст", reply_markup=get_main_keyboard())
+            await cb.message.answer("Список каналов пуст", reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
             return
         await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard())
@@ -939,7 +988,7 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         if not channels:
             await cb.message.delete()
-            await cb.message.answer("Нет каналов для удаления", reply_markup=get_main_keyboard())
+            await cb.message.answer("Нет каналов для удаления", reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
             return
         await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
@@ -957,13 +1006,13 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer(f"✅ Канал {name} удалён", False)
             if not channels:
                 await cb.message.delete()
-                await cb.message.answer("Все каналы удалены", reply_markup=get_main_keyboard())
+                await cb.message.answer("Все каналы удалены", reply_markup=get_main_keyboard(cb.from_user.id))
             else:
                 await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
         else:
             await cb.answer("Канал не найден", True)
 
-    # ========== ДОБАВЛЕНИЕ КАНАЛА ==========
+    # ========= ДОБАВЛЕНИЕ КАНАЛА =========
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -973,9 +1022,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("add_chan_cat_"), AddChannelStates.waiting_for_category)
     async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         cat_id = int(cb.data.split("_")[3])
         await state.update_data(category_id=cat_id)
         await cb.message.edit_text("Введите название канала:", reply_markup=cancel_keyboard())
@@ -990,18 +1037,14 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(AddChannelStates.waiting_for_price)
     async def a_price(m: Message, state: FSMContext):
-        if not m.text.isdigit():
-            await m.answer("Введите число")
-            return
+        if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(price=int(m.text))
         await m.answer("Введите охват (число):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_subscribers)
 
     @dp.message(AddChannelStates.waiting_for_subscribers)
     async def a_subs(m: Message, state: FSMContext):
-        if not m.text.isdigit():
-            await m.answer("Введите число")
-            return
+        if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(subscribers=int(m.text))
         await m.answer("Введите ссылку (https://t.me/...):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_url)
@@ -1009,9 +1052,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(AddChannelStates.waiting_for_url)
     async def a_url(m: Message, state: FSMContext):
         url = m.text.strip()
-        if not url.startswith("https://t.me/"):
-            await m.answer("Ссылка должна начинаться с https://t.me/")
-            return
+        if not url.startswith("https://t.me/"): await m.answer("Ссылка должна начинаться с https://t.me/"); return
         await state.update_data(url=url)
         await m.answer("Введите описание канала:", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_description)
@@ -1029,12 +1070,12 @@ async def register_handlers(dp: Dispatcher):
         await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
         await state.clear()
 
-    # ========== ЗАЯВКИ ==========
+    # ========= ЗАЯВКИ (админ) =========
     @dp.callback_query(F.data == "admin_orders")
     async def adm_orders(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         ords = await get_orders(20)
-        if not ords: await cb.message.edit_text("Нет заявок", reply_markup=get_main_keyboard()); await cb.answer(); return
+        if not ords: await cb.message.edit_text("Нет заявок", reply_markup=get_main_keyboard(cb.from_user.id)); await cb.answer(); return
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
         await cb.answer()
 
@@ -1056,52 +1097,35 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=kb)
         await cb.answer()
 
-    # Обновлённый обработчик с возвратом денег при отмене админом и уведомлением при выполнении
     @dp.callback_query(F.data.startswith("set_status_"))
     async def set_st(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         parts = cb.data.split("_")
         oid = int(parts[2])
         new_st = "_".join(parts[3:])
         order = await get_order_by_id(oid)
-        if not order:
-            await cb.answer("Заявка не найдена", True)
-            return
+        if not order: await cb.answer("Заявка не найдена", True); return
 
         old_status = order['status']
-
-        # Если админ отменяет оплаченный заказ – делаем возврат
+        # Возврат денег при отмене админом
         if new_st == 'отменена' and old_status == 'оплачена':
             await return_balance(order['user_id'], order['total'], oid, f"Возврат за отмену заказа #{oid} админом")
             try:
-                await cb.bot.send_message(
-                    order['user_id'],
-                    f"📢 Ваша заявка #{oid} была отменена администратором. Средства возвращены на баланс."
-                )
-            except:
-                pass
+                await cb.bot.send_message(order['user_id'], f"📢 Ваша заявка #{oid} была отменена администратором. Средства возвращены на баланс.")
+            except: pass
             for aid in ADMIN_IDS:
                 if aid != cb.from_user.id:
                     try:
                         await cb.bot.send_message(aid, f"❌ Админ отменил заявку #{oid} (возврат {order['total']}$)")
-                    except:
-                        pass
+                    except: pass
 
         await update_order_status(oid, new_st)
         await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
 
-        # Уведомление пользователя при любом изменении статуса (включая "выполнена")
         try:
-            await cb.bot.send_message(
-                order['user_id'],
-                f"📢 Статус вашей заявки #{oid} изменён на: {new_st}"
-            )
-        except:
-            pass
+            await cb.bot.send_message(order['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
+        except: pass
 
-        # Обновляем список заказов
         ords = await get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
