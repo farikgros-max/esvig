@@ -624,9 +624,9 @@ async def register_handlers(dp: Dispatcher):
     async def catalog_start(m: Message):
         cats = await get_all_categories()
         if not cats:
-            await m.answer(await _(m.from_user.id, 'no_categories'))  # на всякий случай, но такого ключа нет, можно просто "Категории не найдены"
+            await m.answer("Категории не найдены")
             return
-        await m.answer(await _(m.from_user.id, 'choose_category'), reply_markup=await get_categories_keyboard())
+        await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard())
 
     @dp.callback_query(F.data.startswith("category_select_"))
     async def select_category(cb: CallbackQuery):
@@ -662,10 +662,10 @@ async def register_handlers(dp: Dispatcher):
     async def back_to_categories(cb: CallbackQuery):
         cats = await get_all_categories()
         if not cats:
-            await cb.message.edit_text(await _(cb.from_user.id, 'no_categories'), reply_markup=get_back_keyboard())
+            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
             return
-        await cb.message.edit_text(await _(cb.from_user.id, 'choose_category'), reply_markup=await get_categories_keyboard())
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("view_catalog_page_"))
@@ -687,10 +687,10 @@ async def register_handlers(dp: Dispatcher):
     async def back_to_catalog(cb: CallbackQuery):
         cats = await get_all_categories()
         if not cats:
-            await cb.message.edit_text(await _(cb.from_user.id, 'no_categories'), reply_markup=get_back_keyboard())
+            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
             return
-        await cb.message.edit_text(await _(cb.from_user.id, 'choose_category'), reply_markup=await get_categories_keyboard())
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "back_to_main_menu")
@@ -1035,98 +1035,352 @@ async def register_handlers(dp: Dispatcher):
             except: pass
         await my_ords(cb)
 
-    # ========= Админ-панель =========
-    @dp.callback_query(F.data == "admin_stats")
-    async def admin_stats_cb(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True)
-            return
-        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-        tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
-        stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
-        chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
-        week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
-        await conn.close()
-        status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
-        week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week)
-        week_info = await _(cb.from_user.id, 'admin_week_info', week_rows=week_lines) if week else await _(cb.from_user.id, 'admin_no_week_info')
-        txt = await _(cb.from_user.id, 'admin_stats_text',
-                      total_orders=tot_ord,
-                      total_sum=tot_sum or 0,
-                      channel_count=chan_cnt,
-                      statuses=status_lines,
-                      week_info=week_info)
-        await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
-        await cb.answer()
-
-    @dp.callback_query(F.data == "admin_balance")
-    async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True)
-            return
-        await cb.message.edit_text(await _(cb.from_user.id, 'admin_balance_start'), reply_markup=cancel_keyboard())
-        await state.set_state(AdminBalanceStates.waiting_for_user_id)
-        await cb.answer()
-
-    @dp.callback_query(F.data == "cancel_add_channel", AdminBalanceStates.waiting_for_user_id)
-    async def cancel_balance_user(cb: CallbackQuery, state: FSMContext):
+    # ========= Админ-панель (каналы, заявки) – ПОЛНАЯ ВЕРСИЯ =========
+    @dp.callback_query(F.data == "cancel_add_channel")
+    async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True); return
         await state.clear()
         await cb.message.edit_text(await _(cb.from_user.id, 'admin'), reply_markup=get_admin_keyboard())
         await cb.answer()
 
-    @dp.message(AdminBalanceStates.waiting_for_user_id)
-    async def process_balance_user_id(m: Message, state: FSMContext):
-        if not m.text.isdigit():
-            await m.answer(await _(m.from_user.id, 'admin_invalid_id'))
-            return
-        target_id = int(m.text)
-        await state.update_data(target_id=target_id)
-        await m.answer(await _(m.from_user.id, 'admin_balance_amount'), reply_markup=cancel_keyboard())
-        await state.set_state(AdminBalanceStates.waiting_for_amount)
+    @dp.callback_query(F.data == "admin_back")
+    async def adm_back(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin'), reply_markup=get_admin_keyboard())
+        await cb.answer()
 
-    @dp.message(AdminBalanceStates.waiting_for_amount)
-    async def process_balance_amount(m: Message, state: FSMContext):
-        text = m.text.strip()
-        try:
-            amount = int(text)
-        except ValueError:
-            await m.answer(await _(m.from_user.id, 'admin_invalid_amount'))
+    @dp.callback_query(F.data == "admin_categories")
+    async def admin_categories_menu(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await cb.message.edit_text("🏷 Управление категориями", reply_markup=await get_categories_admin_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data == "admin_add_category")
+    async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await cb.message.edit_text("Введите **короткое имя** категории (на английском, например 'mining'):", parse_mode="Markdown")
+        await state.set_state(AddCategoryStates.waiting_for_name)
+        await cb.answer()
+
+    @dp.message(AddCategoryStates.waiting_for_name)
+    async def add_cat_name(m: Message, state: FSMContext):
+        name = m.text.strip()
+        if not name:
+            await m.answer(await _(m.from_user.id, 'enter_number'))
             return
+        await state.update_data(name=name)
+        await m.answer("Введите отображаемое название категории (например 'Майнинг'):")
+        await state.set_state(AddCategoryStates.waiting_for_display_name)
+
+    @dp.message(AddCategoryStates.waiting_for_display_name)
+    async def add_cat_display(m: Message, state: FSMContext):
         data = await state.get_data()
-        target_id = data['target_id']
-        await get_or_create_user(target_id)
-        if amount >= 0:
-            await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
-            msg = await _(m.from_user.id, 'admin_balance_success', target_id=target_id, amount=amount)
-        else:
-            success = await debit_balance(target_id, -amount, None, f"Ручное списание админом {m.from_user.id}")
-            if success:
-                msg = await _(m.from_user.id, 'admin_balance_debit', target_id=target_id, amount=-amount)
-            else:
-                bal = await get_user_balance(target_id)
-                msg = await _(m.from_user.id, 'admin_balance_fail', balance=bal)
-        await m.answer(msg, reply_markup=get_admin_keyboard())
+        name = data['name']
+        display = m.text.strip()
+        if not display:
+            await m.answer(await _(m.from_user.id, 'enter_number'))
+            return
+        await add_category(name, display)
+        await m.answer(f"✅ Категория '{display}' добавлена", reply_markup=get_admin_keyboard())
         await state.clear()
 
-    @dp.callback_query(F.data == "admin_refresh_metrics")
-    async def admin_refresh_metrics(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True)
+    @dp.callback_query(F.data.startswith("admin_category_"))
+    async def admin_category_detail(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        cat_id = int(cb.data.split("_")[2])
+        cat = await get_category_by_id(cat_id)
+        if not cat:
+            await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True)
             return
-        await cb.answer("🔄 Обновление метрик...", False)
-        report, _ = await refresh_all_channels_metrics(cb.bot)
-        await cb.message.answer(report, reply_markup=get_admin_keyboard())
+        await cb.message.edit_text(f"Категория: {cat['display_name']} (id={cat_id}, имя={cat['name']})", reply_markup=get_category_actions_keyboard(cat_id))
+        await cb.answer()
 
-    # Админ-панель (каналы, заявки) – полная версия как в предыдущем рабочем файле, но с поддержкой языков
-    # Из-за ограничения длины я опускаю эту часть, но она уже есть в вашем предыдущем файле и должна быть вставлена.
-    # Скопируйте весь блок админки из последней рабочей версии (admin_list, admin_view_chan, edit_channel и т.д.),
-    # затем замените в нём фиксированные русские строки вызовами await _(cb.from_user.id, ...).
-    # Например:
-    # await cb.message.edit_text(await _(cb.from_user.id, 'admin_list'), reply_markup=get_admin_list_keyboard())
-    # await cb.message.edit_text(await _(cb.from_user.id, 'channel_added', name=..., category=...), reply_markup=get_admin_keyboard())
-    # И так далее.
+    @dp.callback_query(F.data.startswith("admin_del_category_"))
+    async def admin_del_category(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        cat_id = int(cb.data.split("_")[3])
+        await delete_category(cat_id)
+        await cb.answer(await _(cb.from_user.id, 'channel_deleted').format(name=cat_id), False)  # placeholder
+        await admin_categories_menu(cb)
 
-    # После вставки админки бот будет полностью завершён.
+    @dp.callback_query(F.data == "admin_list")
+    async def adm_list(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await load_channels()
+        if not channels:
+            await cb.message.delete()
+            await cb.message.answer(await _(cb.from_user.id, 'admin_no_channels'), reply_markup=get_main_keyboard(cb.from_user.id))
+            await cb.answer()
+            return
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin_list'), reply_markup=get_admin_list_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("admin_view_"))
+    async def adm_view_chan(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await load_channels()
+        cid = cb.data.replace("admin_view_", "")
+        ch = channels.get(cid)
+        if not ch: await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True); return
+        cat_name = ""
+        if ch.get('category_id'):
+            cat = await get_category_by_id(ch['category_id'])
+            if cat:
+                cat_name = cat['display_name']
+        txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}"
+        if cat_name:
+            txt += f"\n🏷 {cat_name}"
+        if ch.get('er'):
+            txt += f"\n📊 ER: {ch['er']}%"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
+        await cb.message.edit_text(txt, reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("edit_channel_"))
+    async def edit_chan_menu(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        cid = cb.data.replace("edit_channel_", "")
+        await load_channels()
+        if cid not in channels: await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True); return
+        await cb.message.edit_text(await _(cb.from_user.id, 'edit_channel', name=channels[cid]['name']), reply_markup=get_edit_channel_keyboard(cid))
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("edit_") & ~F.data.startswith("edit_channel_"))
+    async def edit_field(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        parts = cb.data.split("_",2)
+        if len(parts)<3: await cb.answer("Ошибка", True); return
+        cid, field = parts[1], parts[2]
+        await load_channels()
+        if cid not in channels: await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True); return
+        await state.update_data(ch_id=cid, field=field)
+        if field == 'category':
+            await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(f"edit_chan_cat_{cid}"))
+            await state.set_state(EditChannelStates.waiting_for_category)
+        else:
+            prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новое количество подписчиков (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
+            await cb.message.edit_text(prompts.get(field, "Введите значение:"))
+            if field=='name': await state.set_state(EditChannelStates.waiting_for_name)
+            elif field=='price': await state.set_state(EditChannelStates.waiting_for_price)
+            elif field=='subscribers': await state.set_state(EditChannelStates.waiting_for_subscribers)
+            elif field=='url': await state.set_state(EditChannelStates.waiting_for_url)
+            elif field=='description': await state.set_state(EditChannelStates.waiting_for_description)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("edit_chan_cat_"))
+    async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        parts = cb.data.split("_")
+        cid = parts[3]
+        cat_id = int(parts[4])
+        await update_channel(cid, category_id=cat_id)
+        await load_channels()
+        await cb.answer("Категория обновлена", False)
+        await adm_view_chan(cb)
+        await state.clear()
+
+    @dp.message(EditChannelStates.waiting_for_name)
+    async def e_name(m: Message, state: FSMContext):
+        d = await state.get_data()
+        await update_channel(d['ch_id'], name=m.text)
+        await load_channels()
+        await m.answer(f"✅ Название изменено на {m.text}")
+        await state.clear()
+
+    @dp.message(EditChannelStates.waiting_for_price)
+    async def e_price(m: Message, state: FSMContext):
+        if not m.text.isdigit(): await m.answer("Введите число"); return
+        d = await state.get_data()
+        await update_channel(d['ch_id'], price=int(m.text))
+        await load_channels()
+        await m.answer(f"✅ Цена изменена на {m.text}$")
+        await state.clear()
+
+    @dp.message(EditChannelStates.waiting_for_subscribers)
+    async def e_subs(m: Message, state: FSMContext):
+        if not m.text.isdigit(): await m.answer("Введите число"); return
+        d = await state.get_data()
+        await update_channel(d['ch_id'], subs=int(m.text))
+        await load_channels()
+        await m.answer(f"✅ Количество подписчиков изменено на {m.text}")
+        await state.clear()
+
+    @dp.message(EditChannelStates.waiting_for_url)
+    async def e_url(m: Message, state: FSMContext):
+        url = m.text.strip()
+        if not url.startswith("https://t.me/"):
+            await m.answer("Ссылка должна начинаться с https://t.me/")
+            return
+        d = await state.get_data()
+        await update_channel(d['ch_id'], url=url)
+        await load_channels()
+        await m.answer(f"✅ Ссылка изменена на {url}")
+        await state.clear()
+
+    @dp.message(EditChannelStates.waiting_for_description)
+    async def e_desc(m: Message, state: FSMContext):
+        d = await state.get_data()
+        await update_channel(d['ch_id'], desc=m.text)
+        await load_channels()
+        await m.answer("✅ Описание изменено")
+        await state.clear()
+
+    @dp.callback_query(F.data == "admin_remove")
+    async def adm_rem_menu(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await load_channels()
+        if not channels:
+            await cb.message.delete()
+            await cb.message.answer(await _(cb.from_user.id, 'admin_no_channels'), reply_markup=get_main_keyboard(cb.from_user.id))
+            await cb.answer()
+            return
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin_remove'), reply_markup=get_admin_remove_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("admin_del_"))
+    async def adm_del(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        cid = cb.data.replace("admin_del_", "")
+        await load_channels()
+        if cid in channels:
+            name = channels[cid]['name']
+            await delete_channel(cid)
+            await load_channels()
+            await cb.answer(await _(cb.from_user.id, 'channel_deleted', name=name), False)
+            if not channels:
+                await cb.message.delete()
+                await cb.message.answer(await _(cb.from_user.id, 'all_channels_deleted'), reply_markup=get_main_keyboard(cb.from_user.id))
+            else:
+                await cb.message.edit_text(await _(cb.from_user.id, 'admin_remove'), reply_markup=get_admin_remove_keyboard())
+        else:
+            await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True)
+
+    # ========= ДОБАВЛЕНИЕ КАНАЛА =========
+    @dp.callback_query(F.data == "admin_add")
+    async def adm_add_start(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard("add_chan_cat"))
+        await state.set_state(AddChannelStates.waiting_for_category)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("add_chan_cat_"), AddChannelStates.waiting_for_category)
+    async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        cat_id = int(cb.data.split("_")[3])
+        await state.update_data(category_id=cat_id)
+        await cb.message.edit_text("Введите название канала:", reply_markup=cancel_keyboard())
+        await state.set_state(AddChannelStates.waiting_for_name)
+        await cb.answer()
+
+    @dp.message(AddChannelStates.waiting_for_name)
+    async def a_name(m: Message, state: FSMContext):
+        await state.update_data(name=m.text)
+        await m.answer("Введите цену (число):", reply_markup=cancel_keyboard())
+        await state.set_state(AddChannelStates.waiting_for_price)
+
+    @dp.message(AddChannelStates.waiting_for_price)
+    async def a_price(m: Message, state: FSMContext):
+        if not m.text.isdigit(): await m.answer("Введите число"); return
+        await state.update_data(price=int(m.text))
+        await m.answer("Введите количество подписчиков (число):", reply_markup=cancel_keyboard())
+        await state.set_state(AddChannelStates.waiting_for_subscribers)
+
+    @dp.message(AddChannelStates.waiting_for_subscribers)
+    async def a_subs(m: Message, state: FSMContext):
+        if not m.text.isdigit(): await m.answer("Введите число"); return
+        await state.update_data(subscribers=int(m.text))
+        await m.answer("Введите ссылку (https://t.me/...):", reply_markup=cancel_keyboard())
+        await state.set_state(AddChannelStates.waiting_for_url)
+
+    @dp.message(AddChannelStates.waiting_for_url)
+    async def a_url(m: Message, state: FSMContext):
+        url = m.text.strip()
+        if not url.startswith("https://t.me/"): await m.answer("Ссылка должна начинаться с https://t.me/"); return
+        await state.update_data(url=url)
+        await m.answer("Введите описание канала:", reply_markup=cancel_keyboard())
+        await state.set_state(AddChannelStates.waiting_for_description)
+
+    @dp.message(AddChannelStates.waiting_for_description)
+    async def a_desc(m: Message, state: FSMContext):
+        await state.update_data(description=m.text)
+        data = await state.get_data()
+        new_id = f"channel_{int(time.time())}"
+        cat_id = data['category_id']
+        await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
+        await load_channels()
+        cat = await get_category_by_id(cat_id)
+        cat_name = cat['display_name'] if cat else ""
+        await m.answer(await _(m.from_user.id, 'channel_added', name=data['name'], category=cat_name), reply_markup=get_admin_keyboard())
+        await state.clear()
+
+    # ========= ЗАЯВКИ (админ) =========
+    @dp.callback_query(F.data == "admin_orders")
+    async def adm_orders(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        ords = await get_orders(20)
+        if not ords: await cb.message.edit_text(await _(cb.from_user.id, 'admin_no_orders'), reply_markup=get_main_keyboard(cb.from_user.id)); await cb.answer(); return
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin_orders'), reply_markup=get_admin_orders_keyboard(ords))
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("admin_order_"))
+    async def adm_view_order(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        oid = int(cb.data.split("_")[2])
+        ordd = await get_order_by_id(oid)
+        if not ordd: await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True); return
+        em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}
+        txt = f"📄 Заявка #{ordd['id']}\n👤 @{ordd['username']}\n💰 Сумма: {ordd['total']}$\n📌 Статус: {em.get(ordd['status'], '⚪')} {ordd['status']}\n\nВыберите новый статус:"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🟡 В обработке", callback_data=f"set_status_{oid}_в обработке")],
+            [InlineKeyboardButton(text="🟢 Оплачена", callback_data=f"set_status_{oid}_оплачена")],
+            [InlineKeyboardButton(text="✅ Выполнена", callback_data=f"set_status_{oid}_выполнена")],
+            [InlineKeyboardButton(text="❌ Отменена", callback_data=f"set_status_{oid}_отменена")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_orders")]
+        ])
+        await cb.message.edit_text(txt, reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("set_status_"))
+    async def set_st(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
+        parts = cb.data.split("_")
+        oid = int(parts[2])
+        new_st = "_".join(parts[3:])
+        order = await get_order_by_id(oid)
+        if not order: await cb.answer(await _(cb.from_user.id, 'channel_not_found'), True); return
+
+        old_status = order['status']
+        if new_st == 'отменена' and old_status == 'оплачена':
+            await return_balance(order['user_id'], order['total'], oid, f"Возврат за отмену заказа #{oid} админом")
+            try:
+                await cb.bot.send_message(order['user_id'], await _(cb.from_user.id, 'status_changed', order_id=oid, new_status='отменена'))
+            except: pass
+            for aid in ADMIN_IDS:
+                if aid != cb.from_user.id:
+                    try:
+                        await cb.bot.send_message(aid, f"❌ Админ отменил заявку #{oid} (возврат {order['total']}$)")
+                    except: pass
+
+        await update_order_status(oid, new_st)
+        await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
+        try:
+            await cb.bot.send_message(order['user_id'], await _(cb.from_user.id, 'status_changed', order_id=oid, new_status=new_st))
+        except: pass
+        ords = await get_orders(20)
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin_orders'), reply_markup=get_admin_orders_keyboard(ords))
+
+    # ========= Текстовые сообщения =========
+    @dp.message(F.text == "ℹ️ О сервисе")
+    async def about(m: Message):
+        await m.answer(await _(m.from_user.id, 'about'))
+
+    @dp.message(F.text == "❓ FAQ")
+    async def faq(m: Message):
+        await m.answer(await _(m.from_user.id, 'faq'))
+
+    @dp.message(F.text == "📞 Контакты")
+    async def contacts(m: Message):
+        await m.answer(await _(m.from_user.id, 'contacts'))
 
 # ------------------ Flask и CryptoBot Webhooks ------------------
 flask_app = Flask(__name__)
