@@ -759,7 +759,7 @@ async def register_handlers(dp: Dispatcher):
         else:
             await cb.answer("Канал не найден", True)
 
-    # ========== ДОБАВЛЕНИЕ КАНАЛА (новый порядок) ==========
+    # ========== ДОБАВЛЕНИЕ КАНАЛА (новый порядок: категория -> название -> цена -> охват -> ссылка -> описание) ==========
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
