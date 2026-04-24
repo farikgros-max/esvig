@@ -53,6 +53,11 @@ async def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )''')
+        # Новые поля для дневного лимита
+        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_limit INTEGER DEFAULT 3')
+        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_orders_count INTEGER DEFAULT 0')
+        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT CURRENT_DATE')
+
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -89,14 +94,16 @@ async def get_or_create_user(user_id: int, username: str = None):
     async with pool.acquire() as conn:
         user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
         if not user:
+            # При создании пользователя устанавливаем лимит по умолчанию 3
             await conn.execute(
-                'INSERT INTO users (user_id, username, balance) VALUES ($1, $2, 0)',
+                'INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date) VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)',
                 user_id, username
             )
-            return {'user_id': user_id, 'username': username, 'balance': 0}
+            return {'user_id': user_id, 'username': username, 'balance': 0, 'daily_limit': 3, 'daily_orders_count': 0}
         if username and user['username'] != username:
             await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
-        return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance']}
+        return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance'],
+                'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count']}
 
 async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
     async with pool.acquire() as conn:
@@ -151,6 +158,39 @@ async def get_user_transactions(user_id, limit=10):
             user_id, limit
         )
         return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
+
+# ---------- Дневной лимит заявок ----------
+async def check_daily_order_limit(user_id: int) -> bool:
+    """Возвращает True, если можно создать заявку, и увеличивает счётчик. Иначе False."""
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+        if not user:
+            return False
+        today = await conn.fetchval('SELECT CURRENT_DATE')
+        # Если дата последней заявки не сегодня, сбрасываем счётчик
+        if user['last_order_date'] != today:
+            await conn.execute('UPDATE users SET daily_orders_count = 0, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
+            count = 0
+        else:
+            count = user['daily_orders_count']
+        if count >= user['daily_limit']:
+            return False
+        # Увеличиваем счётчик
+        await conn.execute('UPDATE users SET daily_orders_count = daily_orders_count + 1, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
+        return True
+
+async def get_user_daily_info(user_id: int):
+    """Возвращает (лимит, использовано за сегодня)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+        if not row:
+            return 0, 0
+        today = await conn.fetchval('SELECT CURRENT_DATE')
+        if row['last_order_date'] != today:
+            used = 0
+        else:
+            used = row['daily_orders_count']
+        return row['daily_limit'], used
 
 # ---------- Категории, каналы, заказы ----------
 async def get_all_categories():
