@@ -537,6 +537,7 @@ async def register_handlers(dp: Dispatcher):
         new_lang = 'en' if lang == 'ru' else 'ru'
         await set_user_language(cb.from_user.id, new_lang)
         await cb.answer(await _(cb.from_user.id, 'lang_switched', language=new_lang.upper()), False)
+        # обновляем профиль
         user = await get_or_create_user(cb.from_user.id)
         daily_limit, daily_used = await get_user_daily_info(cb.from_user.id)
         left = max(daily_limit - daily_used, 0)
@@ -552,7 +553,7 @@ async def register_handlers(dp: Dispatcher):
                       daily_limit=daily_limit)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 " + (await _(cb.from_user.id, 'my_orders')).split("\n")[0], callback_data="my_orders")],
-            [InlineKeyboardButton(text=await _(cb.from_user.id, 'transaction_history').split("\n")[0], callback_data="transaction_history")],
+            [InlineKeyboardButton(text=(await _(cb.from_user.id, 'transaction_history')).split("\n")[0], callback_data="transaction_history")],
             [InlineKeyboardButton(text="💰 " + (await _(cb.from_user.id, 'deposit_prompt', min_deposit=MIN_DEPOSIT)).split("\n")[0], callback_data="deposit")],
             [InlineKeyboardButton(text=await _(cb.from_user.id, 'switch_lang'), callback_data="switch_language")],
             [InlineKeyboardButton(text=await _(cb.from_user.id, 'back_to_main'), callback_data="back_to_main_menu")],
@@ -1034,7 +1035,7 @@ async def register_handlers(dp: Dispatcher):
             except: pass
         await my_ords(cb)
 
-    # ========= Админ-панель (каналы, заявки) – ПОЛНАЯ ВЕРСИЯ =========
+    # ========= Админ-панель (каналы, заявки) =========
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True); return
@@ -1047,6 +1048,87 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
         await cb.message.edit_text(await _(cb.from_user.id, 'admin'), reply_markup=get_admin_keyboard())
         await cb.answer()
+
+    @dp.callback_query(F.data == "admin_stats")
+    async def admin_stats_cb(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True)
+            return
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
+        stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
+        chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
+        week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
+        await conn.close()
+        status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
+        week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week)
+        week_info = await _(cb.from_user.id, 'admin_week_info', week_rows=week_lines) if week else await _(cb.from_user.id, 'admin_no_week_info')
+        txt = await _(cb.from_user.id, 'admin_stats_text',
+                      total_orders=tot_ord,
+                      total_sum=tot_sum or 0,
+                      channel_count=chan_cnt,
+                      statuses=status_lines,
+                      week_info=week_info)
+        await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data == "admin_balance")
+    async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True)
+            return
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin_balance_start'), reply_markup=cancel_keyboard())
+        await state.set_state(AdminBalanceStates.waiting_for_user_id)
+        await cb.answer()
+
+    @dp.callback_query(F.data == "cancel_add_channel", AdminBalanceStates.waiting_for_user_id)
+    async def cancel_balance_user(cb: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await cb.message.edit_text(await _(cb.from_user.id, 'admin'), reply_markup=get_admin_keyboard())
+        await cb.answer()
+
+    @dp.message(AdminBalanceStates.waiting_for_user_id)
+    async def process_balance_user_id(m: Message, state: FSMContext):
+        if not m.text.isdigit():
+            await m.answer(await _(m.from_user.id, 'admin_invalid_id'))
+            return
+        target_id = int(m.text)
+        await state.update_data(target_id=target_id)
+        await m.answer(await _(m.from_user.id, 'admin_balance_amount'), reply_markup=cancel_keyboard())
+        await state.set_state(AdminBalanceStates.waiting_for_amount)
+
+    @dp.message(AdminBalanceStates.waiting_for_amount)
+    async def process_balance_amount(m: Message, state: FSMContext):
+        text = m.text.strip()
+        try:
+            amount = int(text)
+        except ValueError:
+            await m.answer(await _(m.from_user.id, 'admin_invalid_amount'))
+            return
+        data = await state.get_data()
+        target_id = data['target_id']
+        await get_or_create_user(target_id)
+        if amount >= 0:
+            await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
+            msg = await _(m.from_user.id, 'admin_balance_success', target_id=target_id, amount=amount)
+        else:
+            success = await debit_balance(target_id, -amount, None, f"Ручное списание админом {m.from_user.id}")
+            if success:
+                msg = await _(m.from_user.id, 'admin_balance_debit', target_id=target_id, amount=-amount)
+            else:
+                bal = await get_user_balance(target_id)
+                msg = await _(m.from_user.id, 'admin_balance_fail', balance=bal)
+        await m.answer(msg, reply_markup=get_admin_keyboard())
+        await state.clear()
+
+    @dp.callback_query(F.data == "admin_refresh_metrics")
+    async def admin_refresh_metrics(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer(await _(cb.from_user.id, 'no_rights'), show_alert=True)
+            return
+        await cb.answer("🔄 Обновление метрик...", False)
+        report, _ = await refresh_all_channels_metrics(cb.bot)
+        await cb.message.answer(report, reply_markup=get_admin_keyboard())
 
     @dp.callback_query(F.data == "admin_categories")
     async def admin_categories_menu(cb: CallbackQuery):
@@ -1099,7 +1181,7 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer(await _(cb.from_user.id, 'no_rights'), True); return
         cat_id = int(cb.data.split("_")[3])
         await delete_category(cat_id)
-        await cb.answer(await _(cb.from_user.id, 'channel_deleted').format(name=cat_id), False)  # placeholder
+        await cb.answer("Категория удалена", False)
         await admin_categories_menu(cb)
 
     @dp.callback_query(F.data == "admin_list")
@@ -1407,12 +1489,37 @@ async def startup():
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
-    # ... (без изменений)
-    pass
+    if not CRYPTO_BOT_TOKEN:
+        return jsonify({'status': 'error'}), 403
+    body = request.get_data()
+    secret = hashlib.sha256(CRYPTO_BOT_TOKEN.encode()).digest()
+    signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
+    if request.headers.get('Crypto-Pay-Api-Signature') != signature:
+        return jsonify({'status': 'error'}), 403
+    data = request.json
+    if data.get('update_type') == 'invoice_paid':
+        payload = data['payload']
+        invoice = payload['invoice']
+        desc = invoice.get('description', '')
+        try:
+            user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
+        except:
+            user_id = None
+        if user_id:
+            amount = int(float(invoice['amount']))
+            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            try:
+                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+            except: pass
+            for aid in ADMIN_IDS:
+                try:
+                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                except: pass
+    return jsonify({'status': 'ok'})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    # ВРЕМЕННО ОТКЛЮЧАЕМ ПРОВЕРКУ ТОКЕНА
+    # ВРЕМЕННО ОТКЛЮЧЕНА ПРОВЕРКА ТОКЕНА
     # if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
     #     return jsonify({'status': 'unauthorized'}), 401
     upd = Update(**request.json)
@@ -1423,5 +1530,4 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 loop.run_until_complete(startup())
 
-application = app
 application = app
