@@ -18,7 +18,8 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       save_order, get_orders, get_orders_by_user, update_order_status,
                       get_order_by_id, clear_non_successful_orders, clear_all_orders,
                       get_all_categories, add_category, delete_category, get_category_by_id,
-                      close_db, get_or_create_user, update_user_balance, get_user_balance)
+                      close_db, get_or_create_user, update_user_balance, get_user_balance,
+                      debit_balance, return_balance, get_user_transactions)
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -27,8 +28,8 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
-MIN_DEPOSIT = 0.1               # минимальная сумма в USDT
-PAID_BTN_URL = "https://t.me/esvig_bot"   # замените на юзернейм вашего бота
+MIN_DEPOSIT = 0.1
+PAID_BTN_URL = "https://t.me/esvig_bot"
 # ==================================
 
 class OrderForm(StatesGroup):
@@ -211,6 +212,7 @@ def get_edit_channel_keyboard(cid):
 def get_profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders")],
+        [InlineKeyboardButton(text="📊 История", callback_data="transaction_history")],
         [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")]
     ])
 
@@ -262,9 +264,9 @@ async def get_category_selection_keyboard(callback_prefix):
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
-        await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
+        user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
-        caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: 0$\n\n🚀 Приятных покупок! 🛍️"
+        caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
         photo = FSInputFile("welcome.jpg")
         await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard())
 
@@ -530,15 +532,32 @@ async def register_handlers(dp: Dispatcher):
         budget = d.get("budget",0)
         contact = m.text.strip()
         username = m.from_user.username or "не указан"
-        order_id = await save_order(m.from_user.id, username, cart, total, budget, contact)
+
+        # Проверяем баланс
+        balance = await get_user_balance(m.from_user.id)
+        if balance < total:
+            await m.answer(f"❌ Недостаточно средств. Ваш баланс: {balance}$, сумма заказа: {total}$.\nПополните баланс в разделе «👤 Мой профиль» → «💰 Пополнить баланс».")
+            await state.clear()
+            return
+
+        # Создаём заказ со статусом "оплачена"
+        order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='оплачена')
+        # Списываем деньги
+        success = await debit_balance(m.from_user.id, total, order_id, description=f"Оплата заказа #{order_id}")
+        if not success:
+            await update_order_status(order_id, 'отменена')
+            await m.answer("Не удалось списать средства. Заказ отменён. Обратитесь в поддержку.")
+            await state.clear()
+            return
+
         items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
-        report = f"🟢 НОВАЯ ЗАЯВКА\n👤 @{username}\n📦 Состав:\n{items}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
+        report = f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n👤 @{username}\n📦 Состав:\n{items}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
         for aid in ADMIN_IDS:
             try:
                 await m.bot.send_message(aid, report)
             except: pass
         user_carts[m.from_user.id] = []
-        await m.answer("✅ Заявка отправлена! Менеджер свяжется с вами.", reply_markup=get_main_keyboard())
+        await m.answer(f"✅ Заказ #{order_id} оформлен и оплачен! Сумма {total}$ списана с баланса.\nМенеджер скоро свяжется с вами.", reply_markup=get_main_keyboard())
         await state.clear()
 
     @dp.message(F.text == "👤 Мой профиль")
@@ -550,7 +569,27 @@ async def register_handlers(dp: Dispatcher):
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$"
         await m.answer(txt, reply_markup=get_profile_keyboard())
 
-    # ---------- ПОПОЛНЕНИЕ БАЛАНСА (свободный ввод) ----------
+    # История транзакций
+    @dp.callback_query(F.data == "transaction_history")
+    async def transaction_history(cb: CallbackQuery):
+        txs = await get_user_transactions(cb.from_user.id, limit=10)
+        if not txs:
+            await cb.answer("История пуста", True)
+            return
+        txt = "📊 Последние транзакции:\n\n"
+        type_emoji = {
+            "пополнение": "🔵",
+            "списание": "🔴",
+            "возврат": "🟢"
+        }
+        for tx in txs:
+            emoji = type_emoji.get(tx['type'], '⚪')
+            txt += f"{emoji} {tx['description']}\n   Сумма: {tx['amount']}$\n   Дата: {tx['created_at'].split('.')[0]}\n\n"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]])
+        await cb.message.edit_text(txt, reply_markup=kb)
+        await cb.answer()
+
+    # ---------- ПОПОЛНЕНИЕ БАЛАНСА ----------
     @dp.callback_query(F.data == "deposit")
     async def deposit_start(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text(
@@ -663,7 +702,7 @@ async def register_handlers(dp: Dispatcher):
             [InlineKeyboardButton(text="✅ Да, отменить", callback_data=f"confirm_cancel_{order_id}")],
             [InlineKeyboardButton(text="🔙 Назад", callback_data="my_orders")]
         ])
-        await cb.message.edit_text(f"⚠️ Вы уверены, что хотите отменить заявку #{order_id} на сумму {ordd['total']}$?\nПосле подтверждения она будет отменена.", reply_markup=kb)
+        await cb.message.edit_text(f"⚠️ Вы уверены, что хотите отменить заявку #{order_id} на сумму {ordd['total']}$?\nДеньги будут возвращены на баланс.", reply_markup=kb)
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("confirm_cancel_"))
@@ -676,15 +715,19 @@ async def register_handlers(dp: Dispatcher):
         if ordd['status'] not in ('в обработке', 'оплачена'):
             await cb.answer("Статус изменился, отмена невозможна", True)
             return
+
+        # Меняем статус и возвращаем деньги
         await update_order_status(order_id, 'отменена')
-        await cb.answer("Заявка отменена", False)
+        await return_balance(ordd['user_id'], ordd['total'], order_id, f"Возврат за отмену заказа #{order_id}")
+
+        await cb.answer("Заявка отменена, деньги возвращены на баланс", False)
         for aid in ADMIN_IDS:
             try:
-                await cb.bot.send_message(aid, f"❌ Заявка #{order_id} отменена пользователем @{ordd['username']} (сумма {ordd['total']}$)")
+                await cb.bot.send_message(aid, f"❌ Заявка #{order_id} отменена пользователем @{ordd['username']} (сумма {ordd['total']}$). Деньги возвращены.")
             except: pass
         await my_ords(cb)
 
-    # Остальные тексты
+    # Текстовые сообщения
     @dp.message(F.text == "ℹ️ О сервисе")
     async def about(m: Message):
         txt = "ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов"
