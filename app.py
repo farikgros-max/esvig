@@ -5,7 +5,6 @@ import sqlite3
 import hashlib
 import re
 import requests
-import time
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
@@ -13,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask, request, jsonify
-from database import init_db, get_all_channels, add_channel, delete_channel, update_channel, save_order, get_orders, get_orders_by_user, update_order_status, get_order_by_id, clear_non_successful_orders, clear_all_orders, get_spheres, get_categories, add_category, delete_category, get_category_by_id
+from database import init_db, get_all_channels, add_channel, delete_channel, update_channel, save_order, get_orders, get_orders_by_user, update_order_status, get_order_by_id, clear_non_successful_orders, clear_all_orders
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -24,7 +23,6 @@ SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 
 init_db()
 
-# ------------------ FSM ------------------
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
     waiting_for_contact = State()
@@ -35,7 +33,6 @@ class AddChannelStates(StatesGroup):
     waiting_for_subscribers = State()
     waiting_for_url = State()
     waiting_for_description = State()
-    waiting_for_category = State()
 
 class EditChannelStates(StatesGroup):
     waiting_for_name = State()
@@ -43,13 +40,7 @@ class EditChannelStates(StatesGroup):
     waiting_for_subscribers = State()
     waiting_for_url = State()
     waiting_for_description = State()
-    waiting_for_category = State()
 
-class AddCategoryStates(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_display_name = State()
-
-# ------------------ Глобальные ------------------
 channels = {}
 user_carts = {}
 
@@ -61,15 +52,15 @@ def get_cart(uid):
 def save_cart(uid, cart):
     user_carts[uid] = cart
 
-async def load_channels(category_id=None):
+async def load_channels():
     global channels
-    channels = get_all_channels(category_id)
-    print(f"Загружено {len(channels)} каналов" + (f" для категории {category_id}" if category_id else ""))
+    channels = get_all_channels()
+    print(f"Загружено {len(channels)} каналов")
 
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
-# ------------------ Клавиатуры ------------------
+# --- Клавиатуры ---
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -85,36 +76,10 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list")],
         [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
         [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add")],
-        [InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
-        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")]
+        [InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")]
     ])
 
-def get_categories_keyboard(sphere_id):
-    cats = get_categories(sphere_id)
-    if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_spheres")]])
-    rows = []
-    for i in range(0, len(cats), 2):
-        row = []
-        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"select_category_{cats[i]['id']}"))
-        if i+1 < len(cats):
-            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"select_category_{cats[i+1]['id']}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_spheres")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def get_spheres_keyboard():
-    spheres = get_spheres()
-    rows = []
-    for i in range(0, len(spheres), 2):
-        row = []
-        row.append(InlineKeyboardButton(text=spheres[i]['name'], callback_data=f"select_sphere_{spheres[i]['id']}"))
-        if i+1 < len(spheres):
-            row.append(InlineKeyboardButton(text=spheres[i+1]['name'], callback_data=f"select_sphere_{spheres[i+1]['id']}"))
-        rows.append(row)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def get_catalog_keyboard(category_id, page=0):
+def get_catalog_keyboard(page=0):
     if not channels:
         return None, 0, 0
     items = list(channels.items())
@@ -127,16 +92,16 @@ def get_catalog_keyboard(category_id, page=0):
     for cid, inf in items[start:end]:
         btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"view_{cid}")])
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page-1}"))
-    if page < tot - 1: nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}"))
+    if page > 0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{page-1}"))
+    if page < tot - 1: nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{page+1}"))
     if nav: btns.append(nav)
-    btns.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data=f"back_to_categories_{category_id}")])
+    btns.append([InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")])
     return InlineKeyboardMarkup(inline_keyboard=btns), page, tot
 
 def get_channel_view_keyboard(cid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить в корзину", callback_data=f"add_{cid}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_to_catalog")]
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_catalog")]
     ])
 
 def get_cart_keyboard(uid):
@@ -150,7 +115,7 @@ def get_cart_keyboard(uid):
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
 def get_back_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main")]])
 
 def get_admin_list_keyboard():
     if not channels: return None
@@ -184,7 +149,6 @@ def get_edit_channel_keyboard(cid):
         [InlineKeyboardButton(text="✏️ Охват", callback_data=f"edit_{cid}_subscribers")],
         [InlineKeyboardButton(text="✏️ Ссылка", callback_data=f"edit_{cid}_url")],
         [InlineKeyboardButton(text="✏️ Описание", callback_data=f"edit_{cid}_description")],
-        [InlineKeyboardButton(text="✏️ Категория", callback_data=f"edit_{cid}_category")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_view_{cid}")]
     ])
 
@@ -200,45 +164,7 @@ def get_stats_keyboard():
         [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")]
     ])
 
-def get_categories_admin_keyboard():
-    cats = get_categories()
-    if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
-        ])
-    rows = []
-    for i in range(0, len(cats), 2):
-        row = []
-        row.append(InlineKeyboardButton(text=f"{cats[i]['display_name']} ({cats[i]['name']})", callback_data=f"admin_category_{cats[i]['id']}"))
-        if i+1 < len(cats):
-            row.append(InlineKeyboardButton(text=f"{cats[i+1]['display_name']} ({cats[i+1]['name']})", callback_data=f"admin_category_{cats[i+1]['id']}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")])
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def get_category_actions_keyboard(cat_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Удалить категорию", callback_data=f"admin_del_category_{cat_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_categories")]
-    ])
-
-def get_category_selection_keyboard(callback_prefix="add_chan_cat"):
-    cats = get_categories()
-    if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
-    rows = []
-    for i in range(0, len(cats), 2):
-        row = []
-        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"{callback_prefix}_{cats[i]['id']}"))
-        if i+1 < len(cats):
-            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"{callback_prefix}_{cats[i+1]['id']}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-# ------------------ Обработчики ------------------
+# --- Обработчики ---
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
@@ -282,7 +208,6 @@ async def register_handlers(dp: Dispatcher):
             txt += "\n📭 За последние 7 дней заявок нет."
         await m.answer(txt, reply_markup=get_stats_keyboard())
 
-    # ----- Очистка статистики -----
     @dp.callback_query(F.data == "confirm_clear_failed")
     async def ask_clear_failed(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -333,68 +258,39 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.delete()
         await cb.answer("Очистка отменена")
 
-    # ----- Каталог -----
     @dp.message(F.text == "📋 Каталог каналов")
-    async def catalog_start(m: Message):
-        spheres = get_spheres()
-        if not spheres:
-            await m.answer("Сферы не найдены")
-            return
-        await m.answer("Выберите сферу:", reply_markup=get_spheres_keyboard())
-
-    @dp.callback_query(F.data.startswith("select_sphere_"))
-    async def select_sphere(cb: CallbackQuery):
-        sphere_id = int(cb.data.split("_")[2])
-        await cb.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard(sphere_id))
-        await cb.answer()
-
-    @dp.callback_query(F.data.startswith("select_category_"))
-    async def select_category(cb: CallbackQuery):
-        cat_id = int(cb.data.split("_")[2])
-        await load_channels(cat_id)
+    async def catalog(m: Message):
+        await load_channels()
         if not channels:
-            await cb.message.edit_text("В этой категории пока нет каналов.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data=f"back_to_categories_{cat_id}")]]))
-            await cb.answer()
+            await m.answer("Каталог пуст")
             return
-        kb, page, total = get_catalog_keyboard(cat_id, 0)
-        await cb.message.edit_text(f"📢 Наши каналы (страница 1/{total})", reply_markup=kb)
-        await cb.answer()
-
-    @dp.callback_query(F.data == "back_to_spheres")
-    async def back_to_spheres(cb: CallbackQuery):
-        await cb.message.edit_text("Выберите сферу:", reply_markup=get_spheres_keyboard())
-        await cb.answer()
-
-    @dp.callback_query(F.data.startswith("back_to_categories_"))
-    async def back_to_categories(cb: CallbackQuery):
-        cat_id = int(cb.data.split("_")[3])
-        cat = get_category_by_id(cat_id)
-        if cat:
-            await cb.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard(cat['sphere_id']))
-        else:
-            await cb.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard(1))
-        await cb.answer()
+        kb, pg, total = get_catalog_keyboard(0)
+        await m.answer(f"📢 Наши каналы (страница 1/{total})\nНажмите на канал для деталей:", reply_markup=kb)
 
     @dp.callback_query(F.data.startswith("view_catalog_page_"))
     async def view_catalog_page(cb: CallbackQuery):
-        parts = cb.data.split("_")
-        cat_id = int(parts[3])
-        page = int(parts[4])
-        await load_channels(cat_id)
-        kb, cur, total = get_catalog_keyboard(cat_id, page)
+        page = int(cb.data.split("_")[-1])
+        await load_channels()
+        kb, cur, total = get_catalog_keyboard(page)
         if kb:
             await cb.message.edit_text(f"📢 Наши каналы (страница {cur+1}/{total})", reply_markup=kb)
         else:
-            await cb.message.edit_text("Каталог пуст", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_to_categories_{cat_id}")]]))
+            await cb.message.edit_text("Каталог пуст", reply_markup=get_back_keyboard())
         await cb.answer()
 
     @dp.callback_query(F.data == "back_to_catalog")
-    async def back_to_catalog_from_view(cb: CallbackQuery):
-        await cb.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard(1))
+    async def back_to_catalog(cb: CallbackQuery):
+        await load_channels()
+        if not channels:
+            await cb.message.edit_text("Каталог пуст", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
+        kb, pg, total = get_catalog_keyboard(0)
+        await cb.message.edit_text(f"📢 Наши каналы (страница 1/{total})", reply_markup=kb)
         await cb.answer()
 
-    @dp.callback_query(F.data == "back_to_main_menu")
-    async def back_main_menu(cb: CallbackQuery):
+    @dp.callback_query(F.data == "back_to_main")
+    async def back_main(cb: CallbackQuery):
         await cb.message.delete()
         await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard())
         await cb.answer()
@@ -422,7 +318,6 @@ async def register_handlers(dp: Dispatcher):
         save_cart(cb.from_user.id, cart)
         await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
 
-    # ----- Корзина, оформление, профиль -----
     @dp.message(F.text == "🛒 Корзина")
     async def cart(m: Message):
         c = get_cart(m.from_user.id)
@@ -548,7 +443,7 @@ async def register_handlers(dp: Dispatcher):
         txt = "📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
         await m.answer(txt)
 
-    # ---------- Админ-панель (каналы, заявки, категории) ----------
+    # ---------- Админ-панель ----------
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -563,61 +458,6 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         await cb.message.edit_text("👑 Админ-панель", reply_markup=get_admin_keyboard())
         await cb.answer()
-
-    @dp.callback_query(F.data == "admin_categories")
-    async def admin_categories_menu(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("🏷 Управление категориями", reply_markup=get_categories_admin_keyboard())
-        await cb.answer()
-
-    @dp.callback_query(F.data == "admin_add_category")
-    async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("Введите **короткое имя** категории (на английском, например 'mining'):", parse_mode="Markdown")
-        await state.set_state(AddCategoryStates.waiting_for_name)
-        await cb.answer()
-
-    @dp.message(AddCategoryStates.waiting_for_name)
-    async def add_cat_name(m: Message, state: FSMContext):
-        name = m.text.strip()
-        if not name:
-            await m.answer("Имя не может быть пустым")
-            return
-        await state.update_data(name=name)
-        await m.answer("Введите отображаемое название категории (например 'Майнинг'):")
-        await state.set_state(AddCategoryStates.waiting_for_display_name)
-
-    @dp.message(AddCategoryStates.waiting_for_display_name)
-    async def add_cat_display(m: Message, state: FSMContext):
-        data = await state.get_data()
-        name = data['name']
-        display = m.text.strip()
-        if not display:
-            await m.answer("Название не может быть пустым")
-            return
-        sphere_id = 1
-        add_category(sphere_id, name, display)
-        await m.answer(f"✅ Категория '{display}' добавлена", reply_markup=get_admin_keyboard())
-        await state.clear()
-
-    @dp.callback_query(F.data.startswith("admin_category_"))
-    async def admin_category_detail(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        cat_id = int(cb.data.split("_")[2])
-        cat = get_category_by_id(cat_id)
-        if not cat:
-            await cb.answer("Категория не найдена", True)
-            return
-        await cb.message.edit_text(f"Категория: {cat['display_name']} (id={cat_id}, имя={cat['name']})", reply_markup=get_category_actions_keyboard(cat_id))
-        await cb.answer()
-
-    @dp.callback_query(F.data.startswith("admin_del_category_"))
-    async def admin_del_category(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        cat_id = int(cb.data.split("_")[3])
-        delete_category(cat_id)
-        await cb.answer("Категория удалена", False)
-        await admin_categories_menu(cb)
 
     @dp.callback_query(F.data == "admin_list")
     async def adm_list(cb: CallbackQuery):
@@ -634,12 +474,7 @@ async def register_handlers(dp: Dispatcher):
         cid = cb.data.replace("admin_view_", "")
         ch = channels.get(cid)
         if not ch: await cb.answer("Канал не найден", True); return
-        cat_info = ""
-        if ch.get('category_id'):
-            cat = get_category_by_id(ch['category_id'])
-            if cat:
-                cat_info = f"\n🏷 Категория: {cat['display_name']}"
-        txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}\n🆔 {cid}{cat_info}"
+        txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}\n🆔 {cid}"
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
         await cb.message.edit_text(txt, reply_markup=kb)
         await cb.answer()
@@ -662,30 +497,14 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         if cid not in channels: await cb.answer("Канал не найден", True); return
         await state.update_data(ch_id=cid, field=field)
-        if field == 'category':
-            await cb.message.edit_text("Выберите новую категорию:", reply_markup=get_category_selection_keyboard(f"edit_chan_cat_{cid}"))
-            await state.set_state(EditChannelStates.waiting_for_category)
-        else:
-            prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новый охват (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
-            await cb.message.edit_text(prompts.get(field, "Введите значение:"))
-            if field=='name': await state.set_state(EditChannelStates.waiting_for_name)
-            elif field=='price': await state.set_state(EditChannelStates.waiting_for_price)
-            elif field=='subscribers': await state.set_state(EditChannelStates.waiting_for_subscribers)
-            elif field=='url': await state.set_state(EditChannelStates.waiting_for_url)
-            elif field=='description': await state.set_state(EditChannelStates.waiting_for_description)
+        prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новый охват (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
+        await cb.message.edit_text(prompts.get(field, "Введите значение:"))
+        if field=='name': await state.set_state(EditChannelStates.waiting_for_name)
+        elif field=='price': await state.set_state(EditChannelStates.waiting_for_price)
+        elif field=='subscribers': await state.set_state(EditChannelStates.waiting_for_subscribers)
+        elif field=='url': await state.set_state(EditChannelStates.waiting_for_url)
+        elif field=='description': await state.set_state(EditChannelStates.waiting_for_description)
         await cb.answer()
-
-    @dp.callback_query(F.data.startswith("edit_chan_cat_"))
-    async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        parts = cb.data.split("_")
-        cid = parts[3]
-        cat_id = int(parts[4])
-        update_channel(cid, category_id=cat_id)
-        await load_channels()
-        await cb.answer("Категория обновлена", False)
-        await adm_view_chan(CallbackQuery(id=0, from_user=cb.from_user, message=cb.message, data=f"admin_view_{cid}"))
-        await state.clear()
 
     @dp.message(EditChannelStates.waiting_for_name)
     async def e_name(m: Message, state: FSMContext):
@@ -766,28 +585,28 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("➕ Добавление канала\n\nВведите название:")
+        await cb.message.edit_text("➕ Добавление канала\n\nВведите название:", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_name)
         await cb.answer()
 
     @dp.message(AddChannelStates.waiting_for_name)
     async def a_name(m: Message, state: FSMContext):
         await state.update_data(name=m.text)
-        await m.answer("Введите цену (число):")
+        await m.answer("Введите цену (число):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_price)
 
     @dp.message(AddChannelStates.waiting_for_price)
     async def a_price(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(price=int(m.text))
-        await m.answer("Введите охват (число):")
+        await m.answer("Введите охват (число):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_subscribers)
 
     @dp.message(AddChannelStates.waiting_for_subscribers)
     async def a_subs(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(subscribers=int(m.text))
-        await m.answer("Введите ссылку (https://t.me/...):")
+        await m.answer("Введите ссылку (https://t.me/...):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_url)
 
     @dp.message(AddChannelStates.waiting_for_url)
@@ -797,32 +616,20 @@ async def register_handlers(dp: Dispatcher):
             await m.answer("Ссылка должна начинаться с https://t.me/")
             return
         await state.update_data(url=url)
-        await m.answer("Введите описание канала:")
+        await m.answer("Введите описание канала:", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_description)
 
     @dp.message(AddChannelStates.waiting_for_description)
     async def a_desc(m: Message, state: FSMContext):
         await state.update_data(description=m.text)
-        await m.answer("Выберите категорию канала:", reply_markup=get_category_selection_keyboard("add_chan_cat"))
-        await state.set_state(AddChannelStates.waiting_for_category)
-
-    @dp.callback_query(F.data.startswith("add_chan_cat_"))
-    async def add_channel_category_selected(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", True)
-            return
-        cat_id = int(cb.data.split("_")[3])
-        cat = get_category_by_id(cat_id)
-        if not cat:
-            await cb.answer("Категория не найдена", True)
-            return
         data = await state.get_data()
-        new_id = f"channel_{int(time.time())}"
-        add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
+        all_ch = get_all_channels()
+        new_id = f"channel_{len(all_ch)+1}"
+        add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'])
         await load_channels()
-        await cb.message.edit_text(f"✅ Канал {data['name']} добавлен в категорию {cat['display_name']}!")
+        await m.answer(f"✅ Канал {data['name']} добавлен!")
         await state.clear()
-        await cb.message.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
+        await m.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
 
     @dp.callback_query(F.data == "admin_orders")
     async def adm_orders(cb: CallbackQuery):
@@ -877,6 +684,19 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 loop.run_until_complete(register_handlers(dp_instance))
 print("Бот готов")
+
+def set_webhook_on_startup():
+    webhook_url = "https://esvig-production.up.railway.app/webhook"
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            json={"url": webhook_url, "secret_token": SECRET_TOKEN}
+        )
+        print(f"Webhook set result: {r.json()}")
+    except Exception as e:
+        print(f"Error setting webhook: {e}")
+
+set_webhook_on_startup()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
