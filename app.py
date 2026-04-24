@@ -1475,16 +1475,8 @@ async def startup():
     await init_db()
     await register_handlers(dp_instance)
     print("Бот готов")
-    await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
-    print(f"Webhook set to {WEBHOOK_URL}")
-    scheduler.add_job(
-        refresh_all_channels_metrics,
-        'interval',
-        hours=6,
-        args=[bot_instance],
-        id='refresh_metrics'
-    )
-    scheduler.start()
+    # Вместо вебхука запускаем polling
+    await dp_instance.start_polling(bot_instance)
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
@@ -1516,15 +1508,7 @@ def cryptobot_webhook():
                 except: pass
     return jsonify({'status': 'ok'})
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    # ВРЕМЕННО ОТКЛЮЧЕНА ПРОВЕРКА ТОКЕНА
-    # if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
-    #     return jsonify({'status': 'unauthorized'}), 401
-    upd = Update(**request.json)
-    loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
-    return jsonify({'status': 'ok'})
-
+# --- Старт ---
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 loop.run_until_complete(startup())
