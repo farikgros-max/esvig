@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import hashlib
+import hmac
 import time
 import asyncpg
 import requests
@@ -17,7 +18,7 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       save_order, get_orders, get_orders_by_user, update_order_status,
                       get_order_by_id, clear_non_successful_orders, clear_all_orders,
                       get_all_categories, add_category, delete_category, get_category_by_id,
-                      close_db, get_or_create_user)
+                      close_db, get_or_create_user, update_user_balance, get_user_balance)
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -25,6 +26,7 @@ ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 84725487
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
+CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 # ==================================
 
 class OrderForm(StatesGroup):
@@ -618,11 +620,56 @@ async def register_handlers(dp: Dispatcher):
             except: pass
         await my_ords(cb)
 
+    # ---------- ПОПОЛНЕНИЕ БАЛАНСА ----------
     @dp.callback_query(F.data == "deposit")
-    async def dep(cb: CallbackQuery):
-        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкоро мы добавим эту возможность.", reply_markup=get_main_keyboard())
+    async def deposit_menu(cb: CallbackQuery):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💵 50$", callback_data="deposit_50"),
+             InlineKeyboardButton(text="💵 100$", callback_data="deposit_100")],
+            [InlineKeyboardButton(text="💵 200$", callback_data="deposit_200"),
+             InlineKeyboardButton(text="💵 500$", callback_data="deposit_500")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
+        ])
+        await cb.message.edit_text("Выберите сумму пополнения в USDT:", reply_markup=kb)
         await cb.answer()
 
+    @dp.callback_query(F.data.startswith("deposit_"))
+    async def create_invoice(cb: CallbackQuery):
+        amount = int(cb.data.split("_")[1])
+        if not CRYPTO_BOT_TOKEN:
+            await cb.answer("Платёжная система временно недоступна", True)
+            return
+
+        # Создаём счёт в CryptoBot
+        url = "https://pay.crypt.bot/api/createInvoice"
+        headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+        payload = {
+            "asset": "USDT",
+            "amount": str(amount),
+            "description": f"Пополнение баланса user_id:{cb.from_user.id}",
+            "paid_btn_name": "callback",
+            "paid_btn_url": "https://t.me/esvig_bot",  # замените на юзернейм вашего бота
+            "hidden_message": f"Спасибо за пополнение, {cb.from_user.first_name}!"
+        }
+        try:
+            r = requests.post(url, json=payload, headers=headers)
+            data = r.json()
+            if data.get("ok"):
+                invoice_url = data["result"]["pay_url"]
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                ])
+                await cb.message.edit_text(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+            else:
+                await cb.message.edit_text("Ошибка при создании счёта. Попробуйте позже.", reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]]
+                ))
+        except Exception as e:
+            print(e)
+            await cb.answer("Ошибка связи с платёжной системой", True)
+
+    # Остальной текст: ℹ️ О сервисе, ❓ FAQ, 📞 Контакты
     @dp.message(F.text == "ℹ️ О сервисе")
     async def about(m: Message):
         txt = "ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов"
@@ -967,7 +1014,7 @@ async def register_handlers(dp: Dispatcher):
         ords = await get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
-# ------------------ Flask ------------------
+# ------------------ Flask и CryptoBot Webhooks ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
@@ -981,10 +1028,53 @@ async def startup():
     await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
     print(f"Webhook set to {WEBHOOK_URL}")
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-loop.run_until_complete(startup())
+# Вебхук для CryptoBot
+@app.route('/cryptobot', methods=['POST'])
+def cryptobot_webhook():
+    if not CRYPTO_BOT_TOKEN:
+        return jsonify({'status': 'error'}), 403
+    body = request.get_data()
+    secret = hashlib.sha256(CRYPTO_BOT_TOKEN.encode()).digest()
+    signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
+    if request.headers.get('Crypto-Pay-Api-Signature') != signature:
+        return jsonify({'status': 'error'}), 403
 
+    data = request.json
+    if data.get('update_type') == 'invoice_paid':
+        payload = data['payload']
+        invoice = payload['invoice']
+        desc = invoice.get('description', '')
+        try:
+            user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
+        except:
+            user_id = None
+
+        if user_id:
+            amount = int(float(invoice['amount']))
+            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            try:
+                loop.run_until_complete(
+                    bot_instance.send_message(
+                        user_id,
+                        f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"
+                    )
+                )
+            except:
+                pass
+            for aid in ADMIN_IDS:
+                try:
+                    loop.run_until_complete(
+                        bot_instance.send_message(
+                            aid,
+                            f"💰 Пользователь {user_id} пополнил баланс на {amount}$"
+                        )
+                    )
+                except:
+                    pass
+
+    return jsonify({'status': 'ok'})
+
+# Вебхук Telegram
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
@@ -992,5 +1082,9 @@ def webhook():
     upd = Update(**request.json)
     loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
     return jsonify({'status': 'ok'})
+
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(startup())
 
 application = app
