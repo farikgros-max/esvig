@@ -9,7 +9,7 @@ import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-                           Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, FSInputFile)
+                           Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -271,7 +271,7 @@ async def get_category_selection_keyboard(callback_prefix):
 
 # ========================= ОБНОВЛЕНИЕ МЕТРИК =========================
 async def update_channel_metrics(bot: Bot, ch_id, ch_url):
-    """Обновляет подписчиков и ER для одного канала. Возвращает 'ok', 'error: причина' или 'skipped: причина'."""
+    """Обновляет подписчиков и ER для одного канала. Возвращает статус."""
     try:
         if "t.me/" in ch_url:
             username = ch_url.split("t.me/")[1].strip("/")
@@ -301,11 +301,7 @@ async def update_channel_metrics(bot: Bot, ch_id, ch_url):
     except:
         pass
 
-    if views_list:
-        views_avg = sum(views_list) // len(views_list)
-    else:
-        views_avg = 0
-
+    views_avg = sum(views_list) // len(views_list) if views_list else 0
     er = (views_avg / subs * 100) if subs > 0 else 0.0
 
     await update_channel_metrics_db(ch_id, subs, round(er, 2), views_avg)
@@ -315,7 +311,6 @@ async def refresh_all_channels_metrics(bot: Bot):
     all_ch = await get_all_channels()
     if not all_ch:
         return "❌ В базе нет каналов.", []
-
     total = len(all_ch)
     ok_list = []
     error_list = []
@@ -325,7 +320,6 @@ async def refresh_all_channels_metrics(bot: Bot):
             ok_list.append(info['name'])
         else:
             error_list.append(f"{info.get('name', ch_id)}: {res}")
-
     report = f"✅ Обновлено: {len(ok_list)} из {total}"
     if error_list:
         report += "\n❌ Ошибки:\n" + "\n".join(f"• {e}" for e in error_list)
@@ -338,10 +332,8 @@ async def register_handlers(dp: Dispatcher):
         user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
-        photo = FSInputFile("welcome.jpg")
-        await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
+        await m.answer(caption, reply_markup=get_main_keyboard(m.from_user.id))
 
-    # Кнопка "Админ‑панель"
     @dp.message(F.text == "🔑 Админ‑панель")
     async def admin_panel_msg(m: Message):
         if m.from_user.id in ADMIN_IDS:
@@ -349,7 +341,6 @@ async def register_handlers(dp: Dispatcher):
         else:
             await m.answer("Нет прав")
 
-    # Статистика
     @dp.callback_query(F.data == "admin_stats")
     async def admin_stats_cb(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -374,7 +365,6 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
         await cb.answer()
 
-    # Изменение баланса админом
     @dp.callback_query(F.data == "admin_balance")
     async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -408,12 +398,9 @@ async def register_handlers(dp: Dispatcher):
         except ValueError:
             await m.answer("Введите целое число (например, 100 или -50).")
             return
-
         data = await state.get_data()
         target_id = data['target_id']
-
         await get_or_create_user(target_id)
-
         if amount >= 0:
             await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
             msg = f"✅ Баланс пользователя {target_id} пополнен на {amount}$"
@@ -423,11 +410,9 @@ async def register_handlers(dp: Dispatcher):
                 msg = f"✅ С баланса пользователя {target_id} списано {-amount}$"
             else:
                 msg = f"❌ Недостаточно средств для списания. Текущий баланс: {await get_user_balance(target_id)}$"
-
         await m.answer(msg, reply_markup=get_admin_keyboard())
         await state.clear()
 
-    # Обновление метрик
     @dp.callback_query(F.data == "admin_refresh_metrics")
     async def admin_refresh_metrics(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -1223,6 +1208,8 @@ app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
+
+scheduler = AsyncIOScheduler()
 
 async def startup():
     await init_db()
