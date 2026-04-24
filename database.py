@@ -6,7 +6,7 @@ DB_NAME = 'channels.db'
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # Таблица категорий
+    # Таблица категорий (id, name, display_name)
     c.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,7 +150,6 @@ def delete_channel(ch_id):
     conn.commit()
     conn.close()
 
-# Функции для заказов (без изменений)
 def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
