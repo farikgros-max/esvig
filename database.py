@@ -150,7 +150,7 @@ async def get_user_transactions(user_id, limit=10):
         )
         return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
 
-# ---------- Категории, каналы, заказы (без изменений, только async) ----------
+# ---------- Категории, каналы, заказы ----------
 async def get_all_categories():
     async with pool.acquire() as conn:
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -218,7 +218,7 @@ async def delete_channel(ch_id):
     async with pool.acquire() as conn:
         await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
 
-async def save_order(user_id, username, cart, total, budget, contact, status='оплачена'):
+async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     async with pool.acquire() as conn:
         cart_json = json.dumps(cart)
         oid = await conn.fetchval(
@@ -264,10 +264,17 @@ async def get_order_by_id(order_id):
                     "status": r['status'], "cart": json.loads(r['cart'])}
         return None
 
+# ---------- Очистка заказов (исправлено) ----------
 async def clear_non_successful_orders():
     async with pool.acquire() as conn:
+        # Сначала удаляем связанные транзакции
+        await conn.execute(
+            "DELETE FROM transactions WHERE order_id IN (SELECT id FROM orders WHERE status IN ('в обработке', 'отменена'))"
+        )
         await conn.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
 
 async def clear_all_orders():
     async with pool.acquire() as conn:
-        await conn.execute('DELETE FROM orders')
+        # Удаляем все транзакции, привязанные к заказам
+        await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
+        await conn.execute("DELETE FROM orders")
