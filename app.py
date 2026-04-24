@@ -9,7 +9,7 @@ import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-                           Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand)
+                           Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, FSInputFile)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -94,15 +94,16 @@ def get_main_keyboard(user_id: int = None):
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def get_admin_keyboard():
+    # Кнопки по две в ряд
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list")],
-        [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
-        [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add")],
-        [InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
-        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
-        [InlineKeyboardButton(text="🔄 Обновить метрики", callback_data="admin_refresh_metrics")],
+        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list"),
+         InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
+        [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add"),
+         InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
+        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
+         InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance"),
+         InlineKeyboardButton(text="🔄 Обновить метрики", callback_data="admin_refresh_metrics")],
     ])
 
 async def get_categories_keyboard():
@@ -271,7 +272,6 @@ async def get_category_selection_keyboard(callback_prefix):
 
 # ========================= ОБНОВЛЕНИЕ МЕТРИК =========================
 async def update_channel_metrics(bot: Bot, ch_id, ch_url):
-    """Обновляет подписчиков и ER для одного канала. Возвращает статус."""
     try:
         if "t.me/" in ch_url:
             username = ch_url.split("t.me/")[1].strip("/")
@@ -279,9 +279,8 @@ async def update_channel_metrics(bot: Bot, ch_id, ch_url):
             return f"skipped: некорректная ссылка {ch_url}"
         if username.startswith("+"):
             return f"skipped: приватная ссылка (не поддерживается) {username}"
-
         chat = await bot.get_chat(f"@{username}")
-        subs = await bot.get_chat_member_count(chat.id)   # <-- исправлено (без s)
+        subs = await bot.get_chat_member_count(chat.id)
     except Exception as e:
         err = str(e)
         if "chat not found" in err.lower():
@@ -292,7 +291,6 @@ async def update_channel_metrics(bot: Bot, ch_id, ch_url):
             return f"error: превышен лимит запросов, попробуйте позже ({username})"
         else:
             return f"error: {err[:100]}"
-
     views_list = []
     try:
         async for msg in bot.get_chat_history(chat.id, limit=5):
@@ -300,10 +298,8 @@ async def update_channel_metrics(bot: Bot, ch_id, ch_url):
                 views_list.append(msg.views)
     except:
         pass
-
     views_avg = sum(views_list) // len(views_list) if views_list else 0
     er = (views_avg / subs * 100) if subs > 0 else 0.0
-
     await update_channel_metrics_db(ch_id, subs, round(er, 2), views_avg)
     return "ok"
 
@@ -332,7 +328,13 @@ async def register_handlers(dp: Dispatcher):
         user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
-        await m.answer(caption, reply_markup=get_main_keyboard(m.from_user.id))
+        # Возвращаем фото (убедитесь, что welcome.jpg лежит в корне репозитория)
+        try:
+            photo = FSInputFile("welcome.jpg")
+            await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
+        except Exception:
+            # fallback – если файла нет, отправляем текст
+            await m.answer(caption, reply_markup=get_main_keyboard(m.from_user.id))
 
     @dp.message(F.text == "🔑 Админ‑панель")
     async def admin_panel_msg(m: Message):
