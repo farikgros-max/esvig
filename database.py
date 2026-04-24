@@ -3,7 +3,6 @@ import json
 import os
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-
 pool = None
 
 async def init_db():
@@ -41,7 +40,6 @@ async def init_db():
                 status TEXT DEFAULT 'в обработке',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-        # Новая таблица пользователей
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -49,6 +47,17 @@ async def init_db():
                 balance INTEGER DEFAULT 0,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        # Новая таблица транзакций
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                type TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                order_id INTEGER REFERENCES orders(id),
+                description TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
         # Стандартные категории
         exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
@@ -82,12 +91,36 @@ async def get_or_create_user(user_id: int, username: str = None):
                 user_id, username
             )
             return {'user_id': user_id, 'username': username, 'balance': 0}
-        # Обновить username, если изменился
         if username and user['username'] != username:
             await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
         return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance']}
 
-# ---------- Категории ----------
+# ---------- Пополнение баланса ----------
+async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
+    """Добавляет сумму к балансу пользователя и записывает транзакцию."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'пополнение', $2, $3)",
+                user_id, amount, description
+            )
+
+async def create_transaction(user_id, tx_type, amount, order_id=None, description=""):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1,$2,$3,$4,$5)",
+            user_id, tx_type, amount, order_id, description
+        )
+
+async def get_user_balance(user_id):
+    async with pool.acquire() as conn:
+        return await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id) or 0
+
+# ---------- Категории ---------- (без изменений)
 async def get_all_categories():
     async with pool.acquire() as conn:
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -107,7 +140,7 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы ----------
+# ---------- Каналы ---------- (без изменений)
 async def get_all_channels(category_id=None):
     async with pool.acquire() as conn:
         if category_id:
@@ -156,7 +189,7 @@ async def delete_channel(ch_id):
     async with pool.acquire() as conn:
         await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
 
-# ---------- Заявки ----------
+# ---------- Заявки ---------- (без изменений)
 async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     async with pool.acquire() as conn:
         cart_json = json.dumps(cart)
