@@ -408,7 +408,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data.startswith("add_"))
     async def add_to_cart(cb: CallbackQuery):
         cid = cb.data.replace("add_", "")
-        info = get_all_channels().get(cid)
+        info = channels.get(cid)
         if not info:
             await cb.answer("Канал не найден", True)
             return
