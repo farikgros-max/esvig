@@ -22,12 +22,11 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
 
-# ---------- ВРЕМЕННОЕ УДАЛЕНИЕ БАЗЫ ДЛЯ СБРОСА СТАТИСТИКИ ----------
-# После первого успешного деплоя удалите или закомментируйте этот блок!
-for f in ["channels.db", "channels.db-wal", "channels.db-shm"]:
-    if os.path.exists(f):
-        os.remove(f)
-        print(f"Удалён файл: {f}")
+# ---------- ВРЕМЕННОЕ УДАЛЕНИЕ БАЗЫ (ЗАКОММЕНТИРОВАНО) ----------
+# for f in ["channels.db", "channels.db-wal", "channels.db-shm"]:
+#     if os.path.exists(f):
+#         os.remove(f)
+#         print(f"Удалён файл: {f}")
 # --------------------------------------------------------------------
 
 init_db()
@@ -68,7 +67,7 @@ def save_cart(uid, cart):
     user_carts[uid] = cart
 
 async def load_channels(category_id=None):
-    global channels  # <-- ОБЯЗАТЕЛЬНО, чтобы обновить глобальную переменную
+    global channels  # ← обязательно, чтобы обновить глобальный словарь
     channels = get_all_channels(category_id)
     print(f"Загружено {len(channels)} каналов" + (f" для категории {category_id}" if category_id else ""))
 
@@ -681,8 +680,7 @@ async def register_handlers(dp: Dispatcher):
         update_channel(cid, category_id=cat_id)
         await load_channels()
         await cb.answer("Категория обновлена", False)
-        # Вместо ручного создания колбека используем существующую функцию или обновлённый список
-        await adm_view_chan(cb)   # здесь можно просто вернуть меню канала
+        await adm_view_chan(cb)   # обновлённый показ канала
         await state.clear()
 
     @dp.message(EditChannelStates.waiting_for_name)
@@ -815,10 +813,9 @@ async def register_handlers(dp: Dispatcher):
             return
         cat_id = int(cb.data.split("_")[3])
         data = await state.get_data()
-        # Генерируем уникальный id для канала
         new_id = f"channel_{int(time.time())}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-        await load_channels()  # теперь обновит глобальный список
+        await load_channels()                # обновит глобальный channels
         cat = get_category_by_id(cat_id)
         cat_name = cat['display_name'] if cat else ""
         await cb.message.edit_text(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!")
