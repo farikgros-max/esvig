@@ -3,3 +3,4 @@ flask
 aiohttp
 gunicorn
 requests
+psycopg2-binary
