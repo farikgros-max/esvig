@@ -1474,10 +1474,9 @@ scheduler = AsyncIOScheduler()
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Сбрасываем вебхук, если он был установлен
-    await bot_instance.delete_webhook()
+    await bot_instance.delete_webhook()          # сбросить вебхук
+    await bot_instance.get_updates()            # очистить накопившиеся обновления
     print("Бот готов")
-    # Запускаем поллинг
     await dp_instance.start_polling(bot_instance)
 
 @app.route('/cryptobot', methods=['POST'])
