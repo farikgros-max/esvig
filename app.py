@@ -2,9 +2,9 @@ import os
 import asyncio
 import json
 import hashlib
-import re
-import requests
 import time
+import asyncpg
+import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
@@ -23,6 +23,8 @@ BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
 ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
+# ВАЖНО: правильный домен Railway
+WEBHOOK_URL = "https://esvig-production.up.railway.app/webhook"
 # ==================================
 
 class OrderForm(StatesGroup):
@@ -252,7 +254,6 @@ async def register_handlers(dp: Dispatcher):
         if m.from_user.id not in ADMIN_IDS:
             await m.answer("Нет прав")
             return
-        import asyncpg
         conn = await asyncpg.connect(os.environ["DATABASE_URL"])
         tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
         stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
@@ -544,7 +545,7 @@ async def register_handlers(dp: Dispatcher):
         txt = "📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
         await m.answer(txt)
 
-    # ---------- Админ-панель (каналы, заявки, категории) ----------
+    # ---------- Админ-панель ----------
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -695,7 +696,6 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         await m.answer(f"✅ Название изменено на {m.text}")
         await state.clear()
-        await adm_list(CallbackQuery(id=0, from_user=m.from_user, message=m, data="admin_list"))
 
     @dp.message(EditChannelStates.waiting_for_price)
     async def e_price(m: Message, state: FSMContext):
@@ -705,7 +705,6 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         await m.answer(f"✅ Цена изменена на {m.text}$")
         await state.clear()
-        await adm_list(CallbackQuery(id=0, from_user=m.from_user, message=m, data="admin_list"))
 
     @dp.message(EditChannelStates.waiting_for_subscribers)
     async def e_subs(m: Message, state: FSMContext):
@@ -715,7 +714,6 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         await m.answer(f"✅ Охват изменён на {m.text}")
         await state.clear()
-        await adm_list(CallbackQuery(id=0, from_user=m.from_user, message=m, data="admin_list"))
 
     @dp.message(EditChannelStates.waiting_for_url)
     async def e_url(m: Message, state: FSMContext):
@@ -728,7 +726,6 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         await m.answer(f"✅ Ссылка изменена на {url}")
         await state.clear()
-        await adm_list(CallbackQuery(id=0, from_user=m.from_user, message=m, data="admin_list"))
 
     @dp.message(EditChannelStates.waiting_for_description)
     async def e_desc(m: Message, state: FSMContext):
@@ -737,7 +734,6 @@ async def register_handlers(dp: Dispatcher):
         await load_channels()
         await m.answer("✅ Описание изменено")
         await state.clear()
-        await adm_list(CallbackQuery(id=0, from_user=m.from_user, message=m, data="admin_list"))
 
     @dp.callback_query(F.data == "admin_remove")
     async def adm_rem_menu(cb: CallbackQuery):
@@ -769,7 +765,7 @@ async def register_handlers(dp: Dispatcher):
         else:
             await cb.answer("Канал не найден", True)
 
-    # ========== ДОБАВЛЕНИЕ КАНАЛА (новый порядок: категория -> название -> цена -> охват -> ссылка -> описание) ==========
+    # ========== ДОБАВЛЕНИЕ КАНАЛА ==========
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -889,9 +885,8 @@ async def startup():
     await init_db()
     await register_handlers(dp_instance)
     print("Бот готов")
-    webhook_url = "https://esvig-production.up.railway.app/webhook"
-    await bot_instance.set_webhook(webhook_url, secret_token=SECRET_TOKEN)
-    print(f"Webhook set to {webhook_url}")
+    await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
+    print(f"Webhook set to {WEBHOOK_URL}")
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
