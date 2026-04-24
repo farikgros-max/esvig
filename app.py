@@ -24,7 +24,6 @@ BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
 ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-# ВАЖНО: актуальный домен Railway
 WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 # ==================================
 
@@ -111,21 +110,44 @@ async def get_categories_keyboard():
     rows.append([InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def get_catalog_keyboard(category_id, page=0):
+# Новая функция построения клавиатуры каталога с сортировкой
+def get_catalog_keyboard(category_id, page=0, sort_by="default"):
     if not channels:
         return None, 0, 0
     items = list(channels.items())
+    # Применяем сортировку
+    if sort_by == "price_asc":
+        items.sort(key=lambda x: x[1]['price'])
+    elif sort_by == "price_desc":
+        items.sort(key=lambda x: x[1]['price'], reverse=True)
+    elif sort_by == "subs_asc":
+        items.sort(key=lambda x: x[1]['subscribers'])
+    elif sort_by == "subs_desc":
+        items.sort(key=lambda x: x[1]['subscribers'], reverse=True)
+    # default – без сортировки (как пришли из БД)
+
     tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page < 0: page = 0
     if page >= tot: page = tot - 1
     start = page * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
     btns = []
+    # Сортируем кнопки
+    if len(items) > 1:   # показывать сортировку только если больше одного канала
+        sort_row = [
+            InlineKeyboardButton(text="🔽 Цена", callback_data=f"sort_{category_id}_price_asc_{page}"),
+            InlineKeyboardButton(text="🔼 Цена", callback_data=f"sort_{category_id}_price_desc_{page}"),
+            InlineKeyboardButton(text="🔽 Подп.", callback_data=f"sort_{category_id}_subs_asc_{page}"),
+            InlineKeyboardButton(text="🔼 Подп.", callback_data=f"sort_{category_id}_subs_desc_{page}")
+        ]
+        btns.append(sort_row)
     for cid, inf in items[start:end]:
         btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"channel_view_{cid}")])
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page-1}"))
-    if page < tot - 1: nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}"))
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page}_{sort_by}"))
+    if page < tot - 1:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}_{sort_by}"))
     if nav: btns.append(nav)
     btns.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")])
     return InlineKeyboardMarkup(inline_keyboard=btns), page, tot
@@ -241,7 +263,7 @@ async def register_handlers(dp: Dispatcher):
     async def start(m: Message):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: 0$\n\n🚀 Приятных покупок! 🛍️"
-        photo = FSInputFile("welcome.jpg")   # убедитесь, что файл называется именно так
+        photo = FSInputFile("welcome.jpg")
         await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard())
 
     @dp.message(Command("admin"))
@@ -352,6 +374,21 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(f"📢 Каналы в категории (страница 1/{total})", reply_markup=kb)
         await cb.answer()
 
+    # Обработчик сортировки
+    @dp.callback_query(F.data.startswith("sort_"))
+    async def sort_catalog(cb: CallbackQuery):
+        parts = cb.data.split("_")
+        # sort_<cat_id>_<field>_<order>_<page>
+        cat_id = int(parts[1])
+        field = parts[2]   # price или subs
+        order = parts[3]   # asc или desc
+        page = int(parts[4])
+        sort_key = f"{field}_{order}"   # "price_asc", "price_desc", "subs_asc", "subs_desc"
+        await load_channels(cat_id)     # на всякий случай обновим
+        kb, cur, total = get_catalog_keyboard(cat_id, page, sort_by=sort_key)
+        await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+        await cb.answer()
+
     @dp.callback_query(F.data == "back_to_categories")
     async def back_to_categories(cb: CallbackQuery):
         cats = await get_all_categories()
@@ -367,8 +404,9 @@ async def register_handlers(dp: Dispatcher):
         parts = cb.data.split("_")
         cat_id = int(parts[3])
         page = int(parts[4])
+        sort_by = parts[5] if len(parts) > 5 else "default"
         await load_channels(cat_id)
-        kb, cur, total = get_catalog_keyboard(cat_id, page)
+        kb, cur, total = get_catalog_keyboard(cat_id, page, sort_by=sort_by)
         if kb:
             await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
         else:
