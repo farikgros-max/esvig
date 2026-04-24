@@ -28,6 +28,11 @@ async def init_db():
                 description TEXT DEFAULT '',
                 category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
             )''')
+        # Добавляем колонки для метрик, если их ещё нет
+        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS er REAL DEFAULT 0')
+        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS views_avg INTEGER DEFAULT 0')
+        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ')
+
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -171,11 +176,11 @@ async def get_all_channels(category_id=None):
     async with pool.acquire() as conn:
         if category_id:
             rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
+                'SELECT id, name, price, subscribers, url, description, category_id, er, views_avg, last_updated FROM channels WHERE category_id = $1',
                 category_id
             )
         else:
-            rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
+            rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id, er, views_avg, last_updated FROM channels')
         ch = {}
         for r in rows:
             ch[r['id']] = {
@@ -184,7 +189,10 @@ async def get_all_channels(category_id=None):
                 "subscribers": r['subscribers'],
                 "url": r['url'],
                 "description": r['description'] or "",
-                "category_id": r['category_id']
+                "category_id": r['category_id'],
+                "er": r['er'] or 0,
+                "views_avg": r['views_avg'] or 0,
+                "last_updated": str(r['last_updated']) if r['last_updated'] else None
             }
         return ch
 
@@ -261,7 +269,7 @@ async def get_order_by_id(order_id):
                     "status": r['status'], "cart": json.loads(r['cart'])}
         return None
 
-# ---------- Очистка заказов (исправлено) ----------
+# ---------- Очистка заказов ----------
 async def clear_non_successful_orders():
     async with pool.acquire() as conn:
         await conn.execute(
@@ -273,3 +281,11 @@ async def clear_all_orders():
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
         await conn.execute("DELETE FROM orders")
+
+# ---------- Метрики каналов ----------
+async def update_channel_metrics_db(ch_id, subscribers, er, views_avg):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE channels SET subscribers=$1, er=$2, views_avg=$3, last_updated=NOW() WHERE id=$4",
+            subscribers, er, views_avg, ch_id
+        )
