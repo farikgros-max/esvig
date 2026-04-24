@@ -22,6 +22,14 @@ ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 # ==================================
 
+# ---------- ВРЕМЕННОЕ УДАЛЕНИЕ БАЗЫ ДЛЯ СБРОСА СТАТИСТИКИ ----------
+# После первого успешного деплоя удалите или закомментируйте этот блок!
+for f in ["channels.db", "channels.db-wal", "channels.db-shm"]:
+    if os.path.exists(f):
+        os.remove(f)
+        print(f"Удалён файл: {f}")
+# --------------------------------------------------------------------
+
 init_db()
 
 class OrderForm(StatesGroup):
@@ -60,7 +68,7 @@ def save_cart(uid, cart):
     user_carts[uid] = cart
 
 async def load_channels(category_id=None):
-    global channels
+    global channels  # <-- ОБЯЗАТЕЛЬНО, чтобы обновить глобальную переменную
     channels = get_all_channels(category_id)
     print(f"Загружено {len(channels)} каналов" + (f" для категории {category_id}" if category_id else ""))
 
@@ -505,7 +513,8 @@ async def register_handlers(dp: Dispatcher):
     async def my_ords(cb: CallbackQuery):
         ords = get_orders_by_user(cb.from_user.id, 10, only_completed=False)
         if not ords:
-            await cb.message.edit_text("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
+            await cb.message.delete()
+            await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard())
             await cb.answer()
             return
         txt = "📊 Ваши заявки:\n\n"
@@ -517,7 +526,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "deposit")
     async def dep(cb: CallbackQuery):
-        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкоро мы добавим эту возможность.", reply_markup=get_main_keyboard())
+        await cb.message.edit_text("💰 Пополнение баланса временно недоступно.\n\nСкорее мы добавим эту возможность.", reply_markup=get_main_keyboard())
         await cb.answer()
 
     @dp.message(F.text == "ℹ️ О сервисе")
@@ -672,7 +681,8 @@ async def register_handlers(dp: Dispatcher):
         update_channel(cid, category_id=cat_id)
         await load_channels()
         await cb.answer("Категория обновлена", False)
-        await adm_view_chan(CallbackQuery(id=0, from_user=cb.from_user, message=cb.message, data=f"admin_view_{cid}"))
+        # Вместо ручного создания колбека используем существующую функцию или обновлённый список
+        await adm_view_chan(cb)   # здесь можно просто вернуть меню канала
         await state.clear()
 
     @dp.message(EditChannelStates.waiting_for_name)
@@ -803,21 +813,14 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", True)
             return
-        # Извлекаем cat_id
-        try:
-            cat_id = int(cb.data.split("_")[3])
-        except (IndexError, ValueError):
-            await cb.answer("Ошибка: неверный формат категории", True)
-            return
+        cat_id = int(cb.data.split("_")[3])
         data = await state.get_data()
-        if not data:
-            await cb.answer("Ошибка: данные канала не найдены", True)
-            return
+        # Генерируем уникальный id для канала
         new_id = f"channel_{int(time.time())}"
         add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-        await load_channels()
+        await load_channels()  # теперь обновит глобальный список
         cat = get_category_by_id(cat_id)
-        cat_name = cat['display_name'] if cat else "неизвестная"
+        cat_name = cat['display_name'] if cat else ""
         await cb.message.edit_text(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!")
         await state.clear()
         await cb.message.answer("Вернуться в админ-панель:", reply_markup=get_admin_keyboard())
