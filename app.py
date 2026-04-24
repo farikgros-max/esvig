@@ -101,9 +101,15 @@ def get_categories_keyboard():
     rows = []
     for i in range(0, len(cats), 2):
         row = []
-        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"select_category_{cats[i]['id']}"))
+        row.append(InlineKeyboardButton(
+            text=cats[i]['display_name'],
+            callback_data=f"category_select_{cats[i]['id']}"
+        ))
         if i+1 < len(cats):
-            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"select_category_{cats[i+1]['id']}"))
+            row.append(InlineKeyboardButton(
+                text=cats[i+1]['display_name'],
+                callback_data=f"category_select_{cats[i+1]['id']}"
+            ))
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -119,7 +125,7 @@ def get_catalog_keyboard(category_id, page=0):
     end = start + ITEMS_PER_PAGE
     btns = []
     for cid, inf in items[start:end]:
-        btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"view_{cid}")])
+        btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"channel_view_{cid}")])
     nav = []
     if page > 0: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page-1}"))
     if page < tot - 1: nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}"))
@@ -129,7 +135,7 @@ def get_catalog_keyboard(category_id, page=0):
 
 def get_channel_view_keyboard(cid):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить в корзину", callback_data=f"add_{cid}")],
+        [InlineKeyboardButton(text="➕ Добавить в корзину", callback_data=f"cart_add_{cid}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_catalog")]
     ])
 
@@ -336,12 +342,17 @@ async def register_handlers(dp: Dispatcher):
             return
         await m.answer("Выберите категорию:", reply_markup=get_categories_keyboard())
 
-    @dp.callback_query(F.data.startswith("select_category_"))
+    @dp.callback_query(F.data.startswith("category_select_"))
     async def select_category(cb: CallbackQuery):
         cat_id = int(cb.data.split("_")[2])
         await load_channels(cat_id)
         if not channels:
-            await cb.message.edit_text("В этой категории пока нет каналов.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
+            await cb.message.edit_text(
+                "В этой категории пока нет каналов.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]
+                )
+            )
             await cb.answer()
             return
         kb, page, total = get_catalog_keyboard(cat_id, 0)
@@ -387,9 +398,9 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard())
         await cb.answer()
 
-    @dp.callback_query(F.data.startswith("view_"))
+    @dp.callback_query(F.data.startswith("channel_view_"))
     async def view_channel(cb: CallbackQuery):
-        cid = cb.data.replace("view_", "")
+        cid = cb.data.replace("channel_view_", "")
         info = channels.get(cid)
         if not info:
             await cb.answer("Канал не найден", True)
@@ -405,9 +416,9 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
         await cb.answer()
 
-    @dp.callback_query(F.data.startswith("add_"))
+    @dp.callback_query(F.data.startswith("cart_add_"))
     async def add_to_cart(cb: CallbackQuery):
-        cid = cb.data.replace("add_", "")
+        cid = cb.data.replace("cart_add_", "")
         info = channels.get(cid)
         if not info:
             await cb.answer("Канал не найден", True)
