@@ -21,7 +21,8 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       close_db, get_or_create_user, update_user_balance, get_user_balance,
                       debit_balance, return_balance, get_user_transactions,
-                      update_channel_metrics_db, check_daily_order_limit, get_user_daily_info)
+                      update_channel_metrics_db, check_daily_order_limit, get_user_daily_info,
+                      get_user_language, set_user_language)
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
@@ -32,7 +33,7 @@ WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
-DAILY_ORDER_LIMIT = 3   # максимум заявок в сутки на пользователя
+DAILY_ORDER_LIMIT = 3
 # ==================================
 
 class OrderForm(StatesGroup):
@@ -212,7 +213,7 @@ def get_edit_channel_keyboard(cid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Название", callback_data=f"edit_{cid}_name")],
         [InlineKeyboardButton(text="✏️ Цена", callback_data=f"edit_{cid}_price")],
-        [InlineKeyboardButton(text="✏️ Охват", callback_data=f"edit_{cid}_subscribers")],
+        [InlineKeyboardButton(text="✏️ Подписчики", callback_data=f"edit_{cid}_subscribers")],
         [InlineKeyboardButton(text="✏️ Ссылка", callback_data=f"edit_{cid}_url")],
         [InlineKeyboardButton(text="✏️ Описание", callback_data=f"edit_{cid}_description")],
         [InlineKeyboardButton(text="✏️ Категория", callback_data=f"edit_{cid}_category")],
@@ -223,7 +224,8 @@ def get_profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders")],
         [InlineKeyboardButton(text="📊 История", callback_data="transaction_history")],
-        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")]
+        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")],
+        [InlineKeyboardButton(text="🌐 Switch Language", callback_data="switch_language")],
     ])
 
 def get_stats_keyboard():
@@ -341,7 +343,6 @@ async def register_handlers(dp: Dispatcher):
         else:
             await m.answer("Нет прав")
 
-    # Статистика (из админ‑панели)
     @dp.callback_query(F.data == "admin_stats")
     async def admin_stats_cb(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -366,7 +367,6 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
         await cb.answer()
 
-    # Ручное изменение баланса
     @dp.callback_query(F.data == "admin_balance")
     async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -477,9 +477,7 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.callback_query(F.data == "clear_no")
     async def clear_no(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", show_alert=True)
-            return
+        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
         await cb.message.delete()
         await cb.answer("Очистка отменена")
 
@@ -577,6 +575,8 @@ async def register_handlers(dp: Dispatcher):
         txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
         if cat_name:
             txt += f"\n🏷 Категория: {cat_name}"
+        if info.get('views_avg'):
+            txt += f"\n📈 Средний охват: {info['views_avg']}"
         if info.get('er'):
             txt += f"\n📊 ER: {info['er']}%"
         await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
@@ -979,6 +979,8 @@ async def register_handlers(dp: Dispatcher):
         txt = f"📌 {ch['name']}\n🔗 {ch['url']}\n💰 {ch['price']}$\n👥 {ch['subscribers']} подп.\n📝 {ch.get('description','Нет описания')}"
         if cat_name:
             txt += f"\n🏷 Категория: {cat_name}"
+        if ch.get('views_avg'):
+            txt += f"\n📈 Средний охват: {ch['views_avg']}"
         if ch.get('er'):
             txt += f"\n📊 ER: {ch['er']}%"
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
@@ -1007,7 +1009,7 @@ async def register_handlers(dp: Dispatcher):
             await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(f"edit_chan_cat_{cid}"))
             await state.set_state(EditChannelStates.waiting_for_category)
         else:
-            prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новый охват (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
+            prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новое количество подписчиков (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
             await cb.message.edit_text(prompts.get(field, "Введите значение:"))
             if field=='name': await state.set_state(EditChannelStates.waiting_for_name)
             elif field=='price': await state.set_state(EditChannelStates.waiting_for_price)
@@ -1049,9 +1051,9 @@ async def register_handlers(dp: Dispatcher):
     async def e_subs(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         d = await state.get_data()
-        await update_channel(d['ch_id'], subscribers=int(m.text))
+        await update_channel(d['ch_id'], subs=int(m.text))
         await load_channels()
-        await m.answer(f"✅ Охват изменён на {m.text}")
+        await m.answer(f"✅ Количество подписчиков изменено на {m.text}")
         await state.clear()
 
     @dp.message(EditChannelStates.waiting_for_url)
@@ -1069,7 +1071,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(EditChannelStates.waiting_for_description)
     async def e_desc(m: Message, state: FSMContext):
         d = await state.get_data()
-        await update_channel(d['ch_id'], description=m.text)
+        await update_channel(d['ch_id'], desc=m.text)
         await load_channels()
         await m.answer("✅ Описание изменено")
         await state.clear()
@@ -1131,7 +1133,7 @@ async def register_handlers(dp: Dispatcher):
     async def a_price(m: Message, state: FSMContext):
         if not m.text.isdigit(): await m.answer("Введите число"); return
         await state.update_data(price=int(m.text))
-        await m.answer("Введите охват (число):", reply_markup=cancel_keyboard())
+        await m.answer("Введите количество подписчиков (число):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_subscribers)
 
     @dp.message(AddChannelStates.waiting_for_subscribers)
