@@ -7,7 +7,8 @@ import asyncpg
 import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+                           Update, ReplyKeyboardMarkup, KeyboardButton, BotCommand, FSInputFile)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -23,7 +24,7 @@ BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
 ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-# ВАЖНО: правильный домен Railway
+# ВАЖНО: актуальный домен Railway
 WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 # ==================================
 
@@ -239,8 +240,9 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
-        text = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: 0$\n\n🚀 Приятных покупок! 🛍️"
-        await m.answer(text, reply_markup=get_main_keyboard())
+        caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: 0$\n\n🚀 Приятных покупок! 🛍️"
+        photo = FSInputFile("welcome.jpg")   # убедитесь, что файл называется именно так
+        await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard())
 
     @dp.message(Command("admin"))
     async def admin(m: Message):
@@ -891,8 +893,8 @@ async def startup():
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 loop.run_until_complete(startup())
-@app.route('/webhook', methods=['POST'])
 
+@app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         return jsonify({'status': 'unauthorized'}), 401
