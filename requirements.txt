@@ -4,3 +4,4 @@ aiohttp
 gunicorn
 requests
 asyncpg
+apscheduler
