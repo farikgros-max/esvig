@@ -269,25 +269,37 @@ async def get_category_selection_keyboard(callback_prefix):
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# ---------- ФУНКЦИЯ ОБНОВЛЕНИЯ МЕТРИК ----------
+# ========================= ОБНОВЛЕНИЕ МЕТРИК =========================
 async def update_channel_metrics(bot: Bot, ch_id, ch_url):
-    """Обновляет подписчиков и ER для одного канала."""
+    """Обновляет подписчиков и ER для одного канала. Возвращает 'ok', 'error: причина' или 'skipped: причина'."""
     try:
-        # Пытаемся получить ID чата по ссылке (например, @username)
-        chat = await bot.get_chat(ch_url.replace("https://t.me/", "@").replace("https://telegram.me/", "@"))
+        if "t.me/" in ch_url:
+            username = ch_url.split("t.me/")[1].strip("/")
+        else:
+            return f"skipped: некорректная ссылка {ch_url}"
+        if username.startswith("+"):
+            return f"skipped: приватная ссылка (не поддерживается) {username}"
+
+        chat = await bot.get_chat(f"@{username}")
         subs = await bot.get_chat_members_count(chat.id)
     except Exception as e:
-        print(f"Ошибка получения данных для канала {ch_id}: {e}")
-        return
+        err = str(e)
+        if "chat not found" in err.lower():
+            return f"error: канал @{username} не найден (бот не добавлен?)"
+        elif "forbidden" in err.lower():
+            return f"error: бот заблокирован или не состоит в @{username}"
+        elif "too many requests" in err.lower():
+            return f"error: превышен лимит запросов, попробуйте позже ({username})"
+        else:
+            return f"error: {err[:100]}"
 
-    # Пытаемся получить последние 5 постов для расчёта просмотров
     views_list = []
     try:
         async for msg in bot.get_chat_history(chat.id, limit=5):
             if msg.views:
                 views_list.append(msg.views)
     except:
-        views_list = []
+        pass
 
     if views_list:
         views_avg = sum(views_list) // len(views_list)
@@ -297,13 +309,27 @@ async def update_channel_metrics(bot: Bot, ch_id, ch_url):
     er = (views_avg / subs * 100) if subs > 0 else 0.0
 
     await update_channel_metrics_db(ch_id, subs, round(er, 2), views_avg)
+    return "ok"
 
 async def refresh_all_channels_metrics(bot: Bot):
-    """Обновляет метрики всех каналов."""
     all_ch = await get_all_channels()
+    if not all_ch:
+        return "❌ В базе нет каналов.", []
+
+    total = len(all_ch)
+    ok_list = []
+    error_list = []
     for ch_id, info in all_ch.items():
-        await update_channel_metrics(bot, ch_id, info['url'])
-    print("Метрики всех каналов обновлены.")
+        res = await update_channel_metrics(bot, ch_id, info['url'])
+        if res == "ok":
+            ok_list.append(info['name'])
+        else:
+            error_list.append(f"{info.get('name', ch_id)}: {res}")
+
+    report = f"✅ Обновлено: {len(ok_list)} из {total}"
+    if error_list:
+        report += "\n❌ Ошибки:\n" + "\n".join(f"• {e}" for e in error_list)
+    return report, error_list
 
 # --- Обработчики ---
 async def register_handlers(dp: Dispatcher):
@@ -315,7 +341,7 @@ async def register_handlers(dp: Dispatcher):
         photo = FSInputFile("welcome.jpg")
         await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
 
-    # Кнопка "Админ‑панель" в главном меню
+    # Кнопка "Админ‑панель"
     @dp.message(F.text == "🔑 Админ‑панель")
     async def admin_panel_msg(m: Message):
         if m.from_user.id in ADMIN_IDS:
@@ -323,17 +349,7 @@ async def register_handlers(dp: Dispatcher):
         else:
             await m.answer("Нет прав")
 
-    # Ручное обновление метрик
-    @dp.callback_query(F.data == "admin_refresh_metrics")
-    async def admin_refresh_metrics(cb: CallbackQuery):
-        if cb.from_user.id not in ADMIN_IDS:
-            await cb.answer("Нет прав", show_alert=True)
-            return
-        await cb.answer("🔄 Запущено обновление метрик...", False)
-        await refresh_all_channels_metrics(cb.bot)
-        await cb.message.answer("✅ Метрики всех каналов обновлены.")
-
-    # Статистика (из админ‑панели)
+    # Статистика
     @dp.callback_query(F.data == "admin_stats")
     async def admin_stats_cb(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS:
@@ -358,7 +374,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
         await cb.answer()
 
-    # Ручное изменение баланса
+    # Изменение баланса админом
     @dp.callback_query(F.data == "admin_balance")
     async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -410,6 +426,16 @@ async def register_handlers(dp: Dispatcher):
 
         await m.answer(msg, reply_markup=get_admin_keyboard())
         await state.clear()
+
+    # Обновление метрик
+    @dp.callback_query(F.data == "admin_refresh_metrics")
+    async def admin_refresh_metrics(cb: CallbackQuery):
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
+        await cb.answer("🔄 Обновление метрик...", False)
+        report, _ = await refresh_all_channels_metrics(cb.bot)
+        await cb.message.answer(report, reply_markup=get_admin_keyboard())
 
     # ========= Очистка статистики =========
     @dp.callback_query(F.data == "confirm_clear_failed")
@@ -562,7 +588,6 @@ async def register_handlers(dp: Dispatcher):
         txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
         if cat_name:
             txt += f"\n🏷 Категория: {cat_name}"
-        # Добавим ER если он есть
         if info.get('er'):
             txt += f"\n📊 ER: {info['er']}%"
         await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
@@ -767,7 +792,7 @@ async def register_handlers(dp: Dispatcher):
         finally:
             await state.clear()
 
-    # ========= Мои заказы (с кнопками "Подробнее" и "Отменить") =========
+    # ========= Мои заказы =========
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
         ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
@@ -858,7 +883,7 @@ async def register_handlers(dp: Dispatcher):
         txt = "📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv"
         await m.answer(txt)
 
-    # ========= Админ-панель (управление каналами, заявками) =========
+    # ========= Админ-панель (каналы, заявки) =========
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
@@ -1173,7 +1198,6 @@ async def register_handlers(dp: Dispatcher):
         if not order: await cb.answer("Заявка не найдена", True); return
 
         old_status = order['status']
-        # Возврат денег при отмене админом
         if new_st == 'отменена' and old_status == 'оплачена':
             await return_balance(order['user_id'], order['total'], oid, f"Возврат за отмену заказа #{oid} админом")
             try:
@@ -1187,22 +1211,18 @@ async def register_handlers(dp: Dispatcher):
 
         await update_order_status(oid, new_st)
         await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
-
         try:
             await cb.bot.send_message(order['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
         except: pass
-
         ords = await get_orders(20)
         await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
-# ------------------ Flask, CryptoBot, Scheduler ------------------
+# ------------------ Flask и CryptoBot Webhooks ------------------
 flask_app = Flask(__name__)
 app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
-
-scheduler = AsyncIOScheduler()
 
 async def startup():
     await init_db()
@@ -1210,8 +1230,6 @@ async def startup():
     print("Бот готов")
     await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
     print(f"Webhook set to {WEBHOOK_URL}")
-
-    # Запускаем планировщик обновления метрик (каждые 6 часов)
     scheduler.add_job(
         refresh_all_channels_metrics,
         'interval',
@@ -1230,7 +1248,6 @@ def cryptobot_webhook():
     signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
     if request.headers.get('Crypto-Pay-Api-Signature') != signature:
         return jsonify({'status': 'error'}), 403
-
     data = request.json
     if data.get('update_type') == 'invoice_paid':
         payload = data['payload']
@@ -1240,29 +1257,16 @@ def cryptobot_webhook():
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
         except:
             user_id = None
-
         if user_id:
             amount = int(float(invoice['amount']))
             loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                loop.run_until_complete(
-                    bot_instance.send_message(
-                        user_id,
-                        f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"
-                    )
-                )
-            except:
-                pass
+                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+            except: pass
             for aid in ADMIN_IDS:
                 try:
-                    loop.run_until_complete(
-                        bot_instance.send_message(
-                            aid,
-                            f"💰 Пользователь {user_id} пополнил баланс на {amount}$"
-                        )
-                    )
-                except:
-                    pass
+                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                except: pass
     return jsonify({'status': 'ok'})
 
 @app.route('/webhook', methods=['POST'])
