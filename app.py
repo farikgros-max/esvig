@@ -110,12 +110,10 @@ async def get_categories_keyboard():
     rows.append([InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# Новая функция построения клавиатуры каталога с сортировкой
 def get_catalog_keyboard(category_id, page=0, sort_by="default"):
     if not channels:
         return None, 0, 0
     items = list(channels.items())
-    # Применяем сортировку
     if sort_by == "price_asc":
         items.sort(key=lambda x: x[1]['price'])
     elif sort_by == "price_desc":
@@ -124,7 +122,6 @@ def get_catalog_keyboard(category_id, page=0, sort_by="default"):
         items.sort(key=lambda x: x[1]['subscribers'])
     elif sort_by == "subs_desc":
         items.sort(key=lambda x: x[1]['subscribers'], reverse=True)
-    # default – без сортировки (как пришли из БД)
 
     tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page < 0: page = 0
@@ -132,8 +129,7 @@ def get_catalog_keyboard(category_id, page=0, sort_by="default"):
     start = page * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
     btns = []
-    # Сортируем кнопки
-    if len(items) > 1:   # показывать сортировку только если больше одного канала
+    if len(items) > 1:
         sort_row = [
             InlineKeyboardButton(text="🔽 Цена", callback_data=f"sort_{category_id}_price_asc_{page}"),
             InlineKeyboardButton(text="🔼 Цена", callback_data=f"sort_{category_id}_price_desc_{page}"),
@@ -374,17 +370,15 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text(f"📢 Каналы в категории (страница 1/{total})", reply_markup=kb)
         await cb.answer()
 
-    # Обработчик сортировки
     @dp.callback_query(F.data.startswith("sort_"))
     async def sort_catalog(cb: CallbackQuery):
         parts = cb.data.split("_")
-        # sort_<cat_id>_<field>_<order>_<page>
         cat_id = int(parts[1])
-        field = parts[2]   # price или subs
-        order = parts[3]   # asc или desc
+        field = parts[2]
+        order = parts[3]
         page = int(parts[4])
-        sort_key = f"{field}_{order}"   # "price_asc", "price_desc", "subs_asc", "subs_desc"
-        await load_channels(cat_id)     # на всякий случай обновим
+        sort_key = f"{field}_{order}"
+        await load_channels(cat_id)
         kb, cur, total = get_catalog_keyboard(cat_id, page, sort_by=sort_key)
         await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
         await cb.answer()
@@ -550,6 +544,7 @@ async def register_handlers(dp: Dispatcher):
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: 0$ (пополнение временно недоступно)"
         await m.answer(txt, reply_markup=get_profile_keyboard())
 
+    # НОВОЕ: отображение списка заявок с кнопками отмены
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
         ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
@@ -559,11 +554,58 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer()
             return
         txt = "📊 Ваши заявки:\n\n"
+        btns = []
         em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}
         for o in ords:
             txt += f"🆔 №{o['id']}\n💰 Сумма: {o['total']}$\n📦 Товаров: {len(o['cart'])}\n📌 Статус: {em.get(o['status'],'⚪')} {o['status']}\n🕒 {o['created_at']}\n➖➖➖➖➖\n"
-        await cb.message.edit_text(txt, reply_markup=get_main_keyboard())
+            # Добавляем кнопку отмены только для статусов, где это возможно
+            if o['status'] in ('в обработке', 'оплачена'):
+                btns.append([InlineKeyboardButton(text=f"❌ Отменить #{o['id']}", callback_data=f"cancel_order_{o['id']}")])
+        btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
+        await cb.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
         await cb.answer()
+
+    # Обработчик отмены заказа
+    @dp.callback_query(F.data.startswith("cancel_order_"))
+    async def cancel_order(cb: CallbackQuery):
+        order_id = int(cb.data.split("_")[2])
+        # Проверяем, что заказ принадлежит пользователю
+        ordd = await get_order_by_id(order_id)
+        if not ordd or ordd['user_id'] != cb.from_user.id:
+            await cb.answer("Заявка не найдена или недоступна", True)
+            return
+        if ordd['status'] not in ('в обработке', 'оплачена'):
+            await cb.answer("Эту заявку уже нельзя отменить", True)
+            return
+
+        # Подтверждение отмены
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, отменить", callback_data=f"confirm_cancel_{order_id}")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="my_orders")]
+        ])
+        await cb.message.edit_text(f"⚠️ Вы уверены, что хотите отменить заявку #{order_id} на сумму {ordd['total']}$?\nПосле подтверждения она будет отменена.", reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("confirm_cancel_"))
+    async def confirm_cancel(cb: CallbackQuery):
+        order_id = int(cb.data.split("_")[2])
+        ordd = await get_order_by_id(order_id)
+        if not ordd or ordd['user_id'] != cb.from_user.id:
+            await cb.answer("Заявка не найдена", True)
+            return
+        if ordd['status'] not in ('в обработке', 'оплачена'):
+            await cb.answer("Статус изменился, отмена невозможна", True)
+            return
+
+        await update_order_status(order_id, 'отменена')
+        await cb.answer("Заявка отменена", False)
+        # Уведомление админам
+        for aid in ADMIN_IDS:
+            try:
+                await cb.bot.send_message(aid, f"❌ Заявка #{order_id} отменена пользователем @{ordd['username']} (сумма {ordd['total']}$)")
+            except: pass
+        # Обновляем список заявок пользователя
+        await my_ords(cb)
 
     @dp.callback_query(F.data == "deposit")
     async def dep(cb: CallbackQuery):
