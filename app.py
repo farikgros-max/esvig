@@ -629,7 +629,11 @@ async def register_handlers(dp: Dispatcher):
     async def adm_list(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         await load_channels()
-        if not channels: await cb.message.edit_text("Список каналов пуст", reply_markup=get_main_keyboard()); await cb.answer(); return
+        if not channels:
+            await cb.message.delete()
+            await cb.message.answer("Список каналов пуст", reply_markup=get_main_keyboard())
+            await cb.answer()
+            return
         await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard())
         await cb.answer()
 
@@ -750,7 +754,11 @@ async def register_handlers(dp: Dispatcher):
     async def adm_rem_menu(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         await load_channels()
-        if not channels: await cb.message.edit_text("Нет каналов для удаления", reply_markup=get_main_keyboard()); await cb.answer(); return
+        if not channels:
+            await cb.message.delete()
+            await cb.message.answer("Нет каналов для удаления", reply_markup=get_main_keyboard())
+            await cb.answer()
+            return
         await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
         await cb.answer()
 
@@ -765,7 +773,8 @@ async def register_handlers(dp: Dispatcher):
             await load_channels()
             await cb.answer(f"✅ Канал {name} удалён", False)
             if not channels:
-                await cb.message.edit_text("Все каналы удалены", reply_markup=get_main_keyboard())
+                await cb.message.delete()
+                await cb.message.answer("Все каналы удалены", reply_markup=get_main_keyboard())
             else:
                 await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard())
         else:
