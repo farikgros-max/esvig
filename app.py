@@ -88,11 +88,13 @@ def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")],
+        [KeyboardButton(text="🌐 Язык / Language")]
     ]
     if user_id in ADMIN_IDS:
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
 
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -331,8 +333,9 @@ LANGUAGES = {
         'catalog': "📋 Каталог каналов",
         'cart': "🛒 Корзина",
         'profile': "👤 Мой профиль",
-        'about': "ℹ️ О сервисе",
-        'faq': "❓ FAQ",
+        'about': "ℹ️ О сервисе\n\nESVIG — это сервис для размещения рекламы в Telegram-каналах.\n\n📌 Что мы предлагаем:\n• Каталог проверенных каналов с актуальной статистикой\n• Удобное оформление заявок прямо в боте\n• Быстрая обработка и связь с менеджером\n• Безопасные расчёты через внутренний баланс\n\n📞 По всем вопросам: @esvig_support",
+        'faq': "❓ Часто задаваемые вопросы\n\n❔ Как разместить рекламу?\nВыберите каналы в разделе «📋 Каталог каналов», добавьте их в корзину и оформите заявку.\n\n❔ Как пополнить баланс?\nПерейдите в «👤 Мой профиль» → «💰 Пополнить баланс» и следуйте инструкциям.\n\n❔ Сколько заявок можно подать в день?\nДневной лимит — 3 заявки. Лимит сбрасывается каждые сутки.\n\n❔ Как отменить заявку?\nОткройте «👤 Мой профиль» → «📊 Мои заявки» и нажмите «❌ Отменить» рядом с нужной заявкой.\n\n❔ Когда вернут деньги при отмене?\nСредства возвращаются на баланс мгновенно после отмены.\n\n📞 Остались вопросы? Пишите: @esvig_support",
+
         'contacts': "📞 Контакты",
         'admin_panel_btn': "🔑 Админ-панель",
         'cart_empty': "Корзина пуста",
@@ -419,8 +422,9 @@ LANGUAGES = {
         'catalog': "📋 Channel Catalog",
         'cart': "🛒 Cart",
         'profile': "👤 My Profile",
-        'about': "ℹ️ About",
-        'faq': "❓ FAQ",
+        'about': "ℹ️ About the Service\n\nESVIG is a service for placing ads in Telegram channels.\n\n📌 What we offer:\n• A catalog of verified channels with up-to-date statistics\n• Easy order placement directly in the bot\n• Fast processing and manager contact\n• Secure payments via internal balance\n\n📞 For all inquiries: @esvig_support",
+        'faq': "❓ Frequently Asked Questions\n\n❔ How do I place an ad?\nChoose channels in the «📋 Channel Catalog», add them to your cart, and submit an order.\n\n❔ How do I top up my balance?\nGo to «👤 My Profile» → «💰 Top Up Balance» and follow the instructions.\n\n❔ How many orders can I place per day?\nThe daily limit is 3 orders. The limit resets every 24 hours.\n\n❔ How do I cancel an order?\nOpen «👤 My Profile» → «📊 My Orders» and tap «❌ Cancel» next to the order.\n\n❔ When will I get a refund after cancellation?\nFunds are returned to your balance instantly upon cancellation.\n\n📞 Still have questions? Contact: @esvig_support",
+
         'contacts': "📞 Contacts",
         'admin_panel_btn': "🔑 Admin Panel",
         'cart_empty': "Cart is empty",
@@ -1458,9 +1462,21 @@ async def register_handlers(dp: Dispatcher):
     async def faq(m: Message):
         await m.answer(await _(m.from_user.id, 'faq'))
 
+
     @dp.message(F.text == "📞 Контакты")
     async def contacts(m: Message):
         await m.answer(await _(m.from_user.id, 'contacts'))
+
+    @dp.message(F.text == "🌐 Язык / Language")
+    async def language_menu(m: Message):
+        lang = await get_user_language(m.from_user.id)
+        new_lang = 'en' if lang == 'ru' else 'ru'
+        await set_user_language(m.from_user.id, new_lang)
+        lang_name = "English 🇬🇧" if new_lang == 'en' else "Русский 🇷🇺"
+        await m.answer(
+            await _(m.from_user.id, 'lang_switched', language=lang_name),
+            reply_markup=get_main_keyboard(m.from_user.id)
+        )
 
 # ------------------ Flask и CryptoBot Webhooks ------------------
 flask_app = Flask(__name__)
@@ -1474,10 +1490,26 @@ scheduler = AsyncIOScheduler()
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Удаляем вебхук и сбрасываем все старые обновления, чтобы не было дублей
-    await bot_instance.delete_webhook(drop_pending_updates=True)
-    print("Бот готов")
-    await dp_instance.start_polling(bot_instance)
+    # Устанавливаем вебхук вместо polling
+    await bot_instance.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=SECRET_TOKEN,
+        drop_pending_updates=True
+    )
+    print(f"Бот готов, вебхук установлен: {WEBHOOK_URL}")
+
+@app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    # Верификация запроса по SECRET_TOKEN
+    token_header = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
+    if token_header != SECRET_TOKEN:
+        return jsonify({'status': 'forbidden'}), 403
+    data = request.json
+    if not data:
+        return jsonify({'status': 'bad request'}), 400
+    update = Update(**data)
+    loop.run_until_complete(dp_instance.feed_update(bot_instance, update))
+    return jsonify({'status': 'ok'})
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
