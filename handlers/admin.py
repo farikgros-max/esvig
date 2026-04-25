@@ -95,10 +95,13 @@ async def admin_del_category(cb: CallbackQuery):
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     ch = await get_all_channels()
-    if len(ch) < 2:
-        await asyncio.sleep(0.2)
+    attempts = 0
+    # Повторяем запрос до 3 раз с паузой 0.5 сек, если каналов меньше двух
+    while len(ch) < 2 and attempts < 3:
+        await asyncio.sleep(0.5)
         ch = await get_all_channels()
-    print(f"[DEBUG] admin_list: получено каналов = {len(ch)}")
+        attempts += 1
+    print(f"[DEBUG] admin_list: получено каналов = {len(ch)} (попыток: {attempts})")
     if not ch:
         await cb.message.delete()
         await cb.message.answer("Список каналов пуст", reply_markup=get_main_keyboard(cb.from_user.id))
