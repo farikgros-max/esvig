@@ -7,19 +7,23 @@ import time
 import asyncpg
 import requests
 import logging
+
 logging.basicConfig(
     filename='bot_errors.log',
     level=logging.ERROR,
     format='%(asctime)s %(levelname)s:%(message)s'
 )
-from aiogram import Bot, Dispatcher, F
+
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
                            ReplyKeyboardMarkup, KeyboardButton, FSInputFile, Update)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from flask import Flask, request, jsonify
+from aiohttp import web
+
 from database import (init_db, get_all_channels, add_channel, delete_channel, update_channel,
                       save_order, get_orders, get_orders_by_user, update_order_status,
                       get_order_by_id, clear_non_successful_orders, clear_all_orders,
@@ -27,10 +31,8 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       close_db, get_or_create_user, update_user_balance, get_user_balance,
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
-from datetime import datetime, timedelta
-from aiogram import BaseMiddleware
 
-# Антифлуд: не чаще одного действия в 2 секунды
+# ---------- Антифлуд ----------
 last_message_time = {}
 
 class AntiFloodMiddleware(BaseMiddleware):
@@ -40,11 +42,12 @@ class AntiFloodMiddleware(BaseMiddleware):
             now = datetime.now()
             if user_id in last_message_time:
                 elapsed = now - last_message_time[user_id]
-                if elapsed < timedelta(seconds=1):   # ← было 2, стало 1
+                if elapsed < timedelta(seconds=1):
                     return
             last_message_time[user_id] = now
         return await handler(event, data)
-# ---------- Конфигурация (все секреты через переменные окружения) ----------
+
+# ---------- Конфигурация ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения!")
@@ -53,7 +56,6 @@ ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 if ADMIN_IDS_STR:
     ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 else:
-    # fallback только для локальной разработки
     ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 
 ITEMS_PER_PAGE = 5
@@ -64,8 +66,8 @@ PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")
 DAILY_ORDER_LIMIT = 3
-# -------------------------------------------------------------------------
 
+# ---------- Состояния ----------
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
     waiting_for_contact = State()
@@ -96,6 +98,7 @@ class AdminBalanceStates(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_amount = State()
 
+# ---------- Корзина (временное хранилище) ----------
 user_carts = {}
 
 def get_cart(uid):
@@ -109,7 +112,7 @@ def save_cart(uid, cart):
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
-# --- Клавиатуры (все функции без изменений, кроме исправления сортировки) ---
+# ---------- Клавиатуры ----------
 def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
@@ -155,7 +158,6 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     if not channels_dict:
         return None, 0, 0
     items = list(channels_dict.items())
-    # Используем sorted() для избежания мутации
     if sort_by == "price_asc":
         items = sorted(items, key=lambda x: x[1]['price'])
     elif sort_by == "price_desc":
@@ -296,7 +298,7 @@ async def get_category_selection_keyboard(callback_prefix):
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# --- Обработчики (без изменений, кроме обработки welcome.jpg) ---
+# ---------- Обработчики ----------
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
@@ -319,7 +321,7 @@ async def register_handlers(dp: Dispatcher):
         else:
             await m.answer("Нет прав")
 
-    # ========== Каталог ==========
+    # ========== Каталог (с защитой от двойных нажатий) ==========
     @dp.message(F.text == "📋 Каталог каналов")
     async def catalog_start(m: Message):
         cats = await get_all_categories()
@@ -328,11 +330,10 @@ async def register_handlers(dp: Dispatcher):
             return
         await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard())
 
-        @dp.callback_query(F.data.startswith("category_select_"))
+    @dp.callback_query(F.data.startswith("category_select_"))
     async def select_category(cb: CallbackQuery):
-        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
+        if cb.from_user.id in user_carts and any(isinstance(x, dict) and '_nav_lock' in x for x in user_carts[cb.from_user.id]):
             return
-        # Ставим блокировку
         if cb.from_user.id not in user_carts:
             user_carts[cb.from_user.id] = []
         user_carts[cb.from_user.id].append({"_nav_lock": True})
@@ -352,9 +353,41 @@ async def register_handlers(dp: Dispatcher):
             if cb.from_user.id in user_carts:
                 user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
+    @dp.callback_query(F.data.startswith("sort_"))
+    async def sort_catalog(cb: CallbackQuery):
+        if cb.from_user.id in user_carts and any(isinstance(x, dict) and '_nav_lock' in x for x in user_carts[cb.from_user.id]):
+            return
+        if cb.from_user.id not in user_carts:
+            user_carts[cb.from_user.id] = []
+        user_carts[cb.from_user.id].append({"_nav_lock": True})
+        try:
+            parts = cb.data.split("_")
+            cat_id = int(parts[1])
+            field = parts[2]
+            order = parts[3]
+            page = int(parts[4])
+            sort_key = f"{field}_{order}"
+            ch = await get_all_channels(cat_id)
+            kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_key)
+            await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+            await cb.answer()
+        finally:
+            if cb.from_user.id in user_carts:
+                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
+
+    @dp.callback_query(F.data == "back_to_categories")
+    async def back_to_categories(cb: CallbackQuery):
+        cats = await get_all_categories()
+        if not cats:
+            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await cb.answer()
+
     @dp.callback_query(F.data.startswith("view_catalog_page_"))
     async def view_catalog_page(cb: CallbackQuery):
-        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
+        if cb.from_user.id in user_carts and any(isinstance(x, dict) and '_nav_lock' in x for x in user_carts[cb.from_user.id]):
             return
         if cb.from_user.id not in user_carts:
             user_carts[cb.from_user.id] = []
@@ -376,31 +409,25 @@ async def register_handlers(dp: Dispatcher):
             if cb.from_user.id in user_carts:
                 user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
-    @dp.callback_query(F.data.startswith("sort_"))
-    async def sort_catalog(cb: CallbackQuery):
-        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
-            return
-        if cb.from_user.id not in user_carts:
-            user_carts[cb.from_user.id] = []
-        user_carts[cb.from_user.id].append({"_nav_lock": True})
-        try:
-            parts = cb.data.split("_")
-            cat_id = int(parts[1])
-            field = parts[2]
-            order = parts[3]
-            page = int(parts[4])
-            sort_key = f"{field}_{order}"
-            ch = await get_all_channels(cat_id)
-            kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_key)
-            await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+    @dp.callback_query(F.data == "back_to_catalog")
+    async def back_to_catalog(cb: CallbackQuery):
+        cats = await get_all_categories()
+        if not cats:
+            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
-        finally:
-            if cb.from_user.id in user_carts:
-                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
+            return
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data == "back_to_main_menu")
+    async def back_main_menu(cb: CallbackQuery):
+        await cb.message.delete()
+        await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard(cb.from_user.id))
+        await cb.answer()
 
     @dp.callback_query(F.data.startswith("channel_view_"))
     async def view_channel(cb: CallbackQuery):
-        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
+        if cb.from_user.id in user_carts and any(isinstance(x, dict) and '_nav_lock' in x for x in user_carts[cb.from_user.id]):
             return
         if cb.from_user.id not in user_carts:
             user_carts[cb.from_user.id] = []
@@ -419,15 +446,13 @@ async def register_handlers(dp: Dispatcher):
             if cb.from_user.id in user_carts:
                 user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
-        @dp.callback_query(F.data.startswith("cart_add_"))
+    @dp.callback_query(F.data.startswith("cart_add_"))
     async def add_to_cart(cb: CallbackQuery):
-        # Защита от двойного тыка
-        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_adding'):
+        if cb.from_user.id in user_carts and any(isinstance(x, dict) and '_adding' in x for x in user_carts[cb.from_user.id]):
             return
-        # Ставим флаг
         if cb.from_user.id not in user_carts:
             user_carts[cb.from_user.id] = []
-        user_carts[cb.from_user.id].append({"_adding": True})  # временная метка
+        user_carts[cb.from_user.id].append({"_adding": True})
         try:
             cid = cb.data.replace("cart_add_", "")
             ch = await get_all_channels()
@@ -436,13 +461,11 @@ async def register_handlers(dp: Dispatcher):
                 await cb.answer("Канал не найден", True)
                 return
             cart = get_cart(cb.from_user.id)
-            # Убираем временную метку
             cart = [x for x in cart if not isinstance(x, dict) or '_adding' not in x]
             cart.append({"id": cid, "name": info['name'], "price": info['price']})
             save_cart(cb.from_user.id, cart)
             await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
         finally:
-            # Очистка флага в любом случае
             if cb.from_user.id in user_carts:
                 user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_adding' not in x]
 
@@ -673,7 +696,6 @@ async def register_handlers(dp: Dispatcher):
             await m.answer(f"Минимальная сумма пополнения — {MIN_DEPOSIT} USDT. Попробуйте ещё раз.")
             return
 
-        # Блокировка повторного входа
         current_state = await state.get_state()
         if current_state == OrderForm.processing_deposit:
             return
@@ -728,7 +750,7 @@ async def register_handlers(dp: Dispatcher):
                     await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
                 else:
                     await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
-            else:  # xrocket
+            else:
                 if data_resp.get("success"):
                     invoice_url = data_resp["data"]["link"]
                     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -827,7 +849,7 @@ async def register_handlers(dp: Dispatcher):
             except: pass
         await my_ords(cb)
 
-    # ========== Админ‑панель (полная) ==========
+    # ========== Админ‑панель ==========
     @dp.callback_query(F.data == "cancel_add_channel")
     async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
@@ -1295,19 +1317,14 @@ async def register_handlers(dp: Dispatcher):
     async def contacts(m: Message):
         await m.answer("📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv")
 
-# ------------------ Flask и Webhooks ------------------
-from aiohttp import web
-
+# ---------- HTTP-сервер (aiohttp) для платёжных вебхуков ----------
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-# ---------- Инициализация БД и хендлеров ----------
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Удаляем вебхук Telegram, т.к. используется Long Polling
     await bot_instance.delete_webhook(drop_pending_updates=True)
-    # Очистка очереди обновлений (чтобы не было дублей)
     try:
         updates = await bot_instance.get_updates(offset=-1, limit=100, timeout=1)
         if updates:
@@ -1315,12 +1332,10 @@ async def startup():
             await bot_instance.get_updates(offset=max_update_id + 1)
     except Exception:
         pass
-    # Активация антифлуда
     dp_instance.message.middleware(AntiFloodMiddleware())
     dp_instance.callback_query.middleware(AntiFloodMiddleware())
     print("Бот готов (Long Polling)")
 
-# ---------- Обработчик платёжных уведомлений CryptoBot ----------
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
@@ -1350,11 +1365,9 @@ async def cryptobot_handler(request):
         print(f"CryptoBot webhook error: {e}")
     return web.json_response({'status': 'ok'})
 
-# ---------- Обработчик платёжных уведомлений XRocket ----------
 async def xrocket_handler(request):
     if not XROCKET_API_KEY:
         return web.json_response({'status': 'error'}, status=403)
-    # Новый XRocket Pay API проверяет ключ в заголовке X-API-Key
     if request.headers.get('X-API-Key') != XROCKET_API_KEY:
         return web.json_response({'status': 'unauthorized'}, status=401)
     try:
@@ -1377,22 +1390,17 @@ async def xrocket_handler(request):
         print(f"XRocket webhook error: {e}")
     return web.json_response({'status': 'ok'})
 
-# ---------- Главная функция запуска ----------
 async def main():
     await startup()
-    # Создаём aiohttp-приложение и регистрируем эндпоинты
     aio_app = web.Application()
     aio_app.router.add_post('/cryptobot', cryptobot_handler)
     aio_app.router.add_post('/xrocket', xrocket_handler)
-    # Запускаем HTTP-сервер на порту Railway (переменная PORT)
     runner = web.AppRunner(aio_app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
     print(f"Платёжный HTTP-сервер запущен на порту {os.environ.get('PORT', 8080)}")
-    # Запускаем бесконечный опрос Telegram (Long Polling)
     await dp_instance.start_polling(bot_instance, skip_updates=True)
 
-# ---------- Точка входа ----------
 if __name__ == "__main__":
     asyncio.run(main())
