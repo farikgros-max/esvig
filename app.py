@@ -1151,84 +1151,92 @@ async def register_handlers(dp: Dispatcher):
         await m.answer("📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv")
 
 # ------------------ Flask и Webhooks ------------------
-flask_app = Flask(__name__)
-app = flask_app
+from aiohttp import web
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-# ---------- Инициализация бота ----------
+# Инициализация БД и хендлеров
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Удаляем вебхук, чтобы освободить очередь обновлений
+    # Удаляем вебхук Telegram, т.к. будем использовать Long Polling
     await bot_instance.delete_webhook(drop_pending_updates=True)
-    print("Вебхук удалён, бот готов (Long Polling)")
+    print("Бот готов (Long Polling)")
 
-# ---------- Платёжные вебхуки (без изменений, но используем asyncio.run) ----------
-@app.route('/cryptobot', methods=['POST'])
-def cryptobot_webhook():
+# Асинхронная обработка платёжных вебхуков
+async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
-        return jsonify({'status': 'error'}), 403
-    body = request.get_data()
+        return web.json_response({'status': 'error'}, status=403)
+    body = await request.read()
     secret = hashlib.sha256(CRYPTO_BOT_TOKEN.encode()).digest()
     signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
     if request.headers.get('Crypto-Pay-Api-Signature') != signature:
-        return jsonify({'status': 'error'}), 403
-    data = request.json
-    if data.get('update_type') == 'invoice_paid':
-        try:
+        return web.json_response({'status': 'error'}, status=403)
+    try:
+        data = await request.json()
+        if data.get('update_type') == 'invoice_paid':
             payload = data['payload']
             invoice = payload['invoice']
             desc = invoice.get('description', '')
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
             if user_id:
                 amount = int(float(invoice['amount']))
-                asyncio.run(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+                await update_user_balance(user_id, amount, f"Пополнение USDT {amount}$")
                 try:
-                    asyncio.run(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                    await bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!")
                 except: pass
                 for aid in ADMIN_IDS:
                     try:
-                        asyncio.run(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                        await bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$")
                     except: pass
-        except Exception as e:
-            print(f"CryptoBot webhook error: {e}")
-    return jsonify({'status': 'ok'})
+    except Exception as e:
+        print(f"CryptoBot webhook error: {e}")
+    return web.json_response({'status': 'ok'})
 
-@app.route('/xrocket', methods=['POST'])
-def xrocket_webhook():
+async def xrocket_handler(request):
     if not XROCKET_API_KEY:
-        return jsonify({'status': 'error'}), 403
-    body = request.get_data()
+        return web.json_response({'status': 'error'}, status=403)
+    body = await request.read()
     secret = hashlib.sha256(XROCKET_API_KEY.encode()).digest()
     signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
     if request.headers.get('X-Signature') != signature:
-        return jsonify({'status': 'error'}), 403
-    data = request.json
-    if data.get('status') == 'paid':
-        try:
+        return web.json_response({'status': 'error'}, status=403)
+    try:
+        data = await request.json()
+        if data.get('status') == 'paid':
             invoice = data.get('invoice', {})
             desc = invoice.get('description', '')
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
             if user_id:
                 amount = int(float(invoice.get('amount', 0)))
-                asyncio.run(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+                await update_user_balance(user_id, amount, f"Пополнение USDT {amount}$")
                 try:
-                    asyncio.run(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                    await bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!")
                 except: pass
                 for aid in ADMIN_IDS:
                     try:
-                        asyncio.run(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                        await bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$")
                     except: pass
-        except Exception as e:
-            print(f"XRocket webhook error: {e}")
-    return jsonify({'status': 'ok'})
+    except Exception as e:
+        print(f"XRocket webhook error: {e}")
+    return web.json_response({'status': 'ok'})
 
-# ---------- Запуск ----------
+async def main():
+    await startup()
+    # Создаём aiohttp-приложение с платёжными эндпоинтами
+    aio_app = web.Application()
+    aio_app.router.add_post('/cryptobot', cryptobot_handler)
+    aio_app.router.add_post('/xrocket', xrocket_handler)
+    # Запускаем HTTP-сервер на порту из переменной окружения
+    runner = web.AppRunner(aio_app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+    await site.start()
+    print(f"Платёжный HTTP-сервер запущен на порту {os.environ.get('PORT', 8080)}")
+    # Запускаем поллинг Telegram
+    await dp_instance.start_polling(bot_instance, skip_updates=True)
+
 if __name__ == "__main__":
-    asyncio.run(startup())
-    import threading
-    threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': int(os.environ.get("PORT", 5000))}).start()
-    asyncio.run(dp_instance.start_polling(bot_instance, skip_updates=True))
-    asyncio.run(dp_instance.start_polling(bot_instance, skip_updates=True))
+    asyncio.run(main())
+🚀 Что изменилось и почему это работает
