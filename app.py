@@ -507,44 +507,44 @@ async def register_handlers(dp: Dispatcher):
         txt = f"👤 Мой профиль\n\n🆔 ID: {m.from_user.id}\n📛 Username: @{m.from_user.username or 'не указан'}\n📦 Успешных заказов: {total_orders}\n💰 Общая сумма трат: {total_spent}$\n💳 Баланс: {user['balance']}$\n📅 Осталось заявок сегодня: {left_orders}/{daily_limit}"
         await m.answer(txt, reply_markup=get_profile_keyboard())
 
-    # ========== ПОПОЛНЕНИЕ БАЛАНСА ==========
-    @dp.callback_query(F.data == "deposit")
-    async def deposit_menu(cb: CallbackQuery):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💵 CryptoBot", callback_data="deposit_crypto")],
-            [InlineKeyboardButton(text="💎 XRocket", callback_data="deposit_xrocket")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
-        ])
-        await cb.message.edit_text("Выберите способ пополнения:", reply_markup=kb)
-        await cb.answer()
+           # ========== ПОПОЛНЕНИЕ БАЛАНСА ==========
+        @dp.callback_query(F.data == "deposit")
+        async def deposit_menu(cb: CallbackQuery):
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💵 CryptoBot", callback_data="deposit_crypto")],
+                [InlineKeyboardButton(text="💎 XRocket", callback_data="deposit_xrocket")],
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
+            ])
+            await cb.message.edit_text("Выберите способ пополнения:", reply_markup=kb)
+            await cb.answer()
 
-    @dp.callback_query(F.data == "deposit_crypto")
-    async def deposit_crypto_start(cb: CallbackQuery, state: FSMContext):
-        await cb.message.edit_text(
-            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
-            reply_markup=cancel_keyboard()
-        )
-        await state.set_state(OrderForm.waiting_for_deposit_amount)
-        await state.update_data(payment_method='crypto')
-        await cb.answer()
+        @dp.callback_query(F.data == "deposit_crypto")
+        async def deposit_crypto_start(cb: CallbackQuery, state: FSMContext):
+            await cb.message.edit_text(
+                f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+                reply_markup=cancel_keyboard()
+            )
+            await state.set_state(OrderForm.waiting_for_deposit_amount)
+            await state.update_data(payment_method='crypto')
+            await cb.answer()
 
-    @dp.callback_query(F.data == "deposit_xrocket")
-    async def deposit_xrocket_start(cb: CallbackQuery, state: FSMContext):
-        await cb.message.edit_text(
-            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
-            reply_markup=cancel_keyboard()
-        )
-        await state.set_state(OrderForm.waiting_for_deposit_amount)
-        await state.update_data(payment_method='xrocket')
-        await cb.answer()
+        @dp.callback_query(F.data == "deposit_xrocket")
+        async def deposit_xrocket_start(cb: CallbackQuery, state: FSMContext):
+            await cb.message.edit_text(
+                f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+                reply_markup=cancel_keyboard()
+            )
+            await state.set_state(OrderForm.waiting_for_deposit_amount)
+            await state.update_data(payment_method='xrocket')
+            await cb.answer()
 
-    @dp.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
+        @dp.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
         async def cancel_deposit(cb: CallbackQuery, state: FSMContext):
             await state.clear()
             await cb.message.edit_text("👤 Мой профиль", reply_markup=get_profile_keyboard())
             await cb.answer()
 
-    @dp.message(OrderForm.waiting_for_deposit_amount)
+        @dp.message(OrderForm.waiting_for_deposit_amount)
         async def process_deposit_amount(m: Message, state: FSMContext):
             text = m.text.strip()
             try:
@@ -629,22 +629,6 @@ async def register_handlers(dp: Dispatcher):
                 await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
             finally:
                 await state.clear()
-        try:
-            r = requests.post(url, json=payload, headers=headers)
-            data_resp = r.json()
-            if data_resp.get("ok"):
-                invoice_url = data_resp["result"]["pay_url"]
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
-                ])
-                await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
-            else:
-                await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
-        except Exception as e:
-            await m.answer(f"❌ Ошибка XRocket: {str(e)[:300]}", reply_markup=get_profile_keyboard())
-        finally:
-            await state.clear()
 
     # ========== Заявки пользователя ==========
     @dp.callback_query(F.data == "my_orders")
