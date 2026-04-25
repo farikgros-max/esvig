@@ -1,5 +1,6 @@
 import os
 import asyncio
+import threading
 import json
 import hashlib
 import hmac
@@ -1155,6 +1156,8 @@ app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
+_polling_started = False
+_polling_lock = threading.Lock()
 
 async def startup():
     await init_db()
@@ -1162,6 +1165,27 @@ async def startup():
     await bot_instance.delete_webhook(drop_pending_updates=True)
     print("Бот готов")
     await dp_instance.start_polling(bot_instance)
+
+def run_async(coro):
+    """Запуск async-кода из Flask webhook-хендлеров (sync-контекст)."""
+    return asyncio.run(coro)
+
+def start_polling_in_background():
+    """
+    Запускает polling в отдельном потоке для WSGI/gunicorn режима.
+    Важно: при workers > 1 или нескольких репликах нужен только один инстанс polling.
+    """
+    global _polling_started
+    with _polling_lock:
+        if _polling_started:
+            return
+        _polling_started = True
+
+    def _runner():
+        asyncio.run(startup())
+
+    t = threading.Thread(target=_runner, name="telegram-polling", daemon=True)
+    t.start()
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
@@ -1183,13 +1207,13 @@ def cryptobot_webhook():
             user_id = None
         if user_id:
             amount = int(float(invoice['amount']))
-            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            run_async(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                run_async(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
             except: pass
             for aid in ADMIN_IDS:
                 try:
-                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    run_async(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
     return jsonify({'status': 'ok'})
 
@@ -1212,18 +1236,21 @@ def xrocket_webhook():
             user_id = None
         if user_id:
             amount = int(float(invoice.get('amount', 0)))
-            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            run_async(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                run_async(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
             except: pass
             for aid in ADMIN_IDS:
                 try:
-                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    run_async(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
     return jsonify({'status': 'ok'})
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-loop.run_until_complete(startup())
-
 application = app
+
+if __name__ == "__main__":
+    asyncio.run(startup())
+elif os.environ.get("RUN_BOT_POLLING", "1") == "1":
+    # Railway/Gunicorn запускает только web-процесс, поэтому по умолчанию
+    # поднимаем polling здесь, чтобы бот продолжал отвечать.
+    start_polling_in_background()
