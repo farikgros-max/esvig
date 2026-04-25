@@ -234,7 +234,8 @@ def get_edit_channel_keyboard(cid):
 def get_profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders")],
-        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")]
+        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")],
+        [InlineKeyboardButton(text="🔍 Проверить платёж", callback_data="check_payment")]
     ])
 
 def get_stats_keyboard():
@@ -426,22 +427,62 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
 
     @dp.callback_query(F.data.startswith("remove_"))
-    async def remove_from_cart(cb: CallbackQuery):
-        idx = int(cb.data.split("_")[1])
-        cart = get_cart(cb.from_user.id)
-        if 0 <= idx < len(cart):
-            removed = cart.pop(idx)
-            save_cart(cb.from_user.id, cart)
-            await cb.answer(f"❌ {removed['name']} удалён", False)
+    @dp.callback_query(F.data.startswith("remove_"))
+        async def ask_remove_item(cb: CallbackQuery):
+            idx = int(cb.data.split("_")[1])
+            cart = get_cart(cb.from_user.id)
+            if 0 <= idx < len(cart):
+                item = cart[idx]
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_remove_{idx}")],
+                    [InlineKeyboardButton(text="❌ Отмена", callback_data="cart_cancel")]
+                ])
+                await cb.message.edit_text(
+                    f"Удалить «{item['name']}» из корзины?",
+                    reply_markup=kb
+                )
+            else:
+                await cb.answer("Товар не найден", show_alert=True)
+            await cb.answer()
+
+        @dp.callback_query(F.data.startswith("confirm_remove_"))
+        async def confirm_remove(cb: CallbackQuery):
+            idx = int(cb.data.split("_")[2])
+            cart = get_cart(cb.from_user.id)
+            if 0 <= idx < len(cart):
+                removed = cart.pop(idx)
+                save_cart(cb.from_user.id, cart)
+                await cb.answer(f"❌ {removed['name']} удалён", show_alert=False)
+            else:
+                await cb.answer("Ошибка: товар уже не существует", show_alert=True)
+            # Обновляем отображение корзины
             if not cart:
                 await cb.message.delete()
                 await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
             else:
                 total = sum(i['price'] for i in cart)
                 items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
-                await cb.message.edit_text(f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$", reply_markup=get_cart_keyboard(cb.from_user.id))
-        else:
-            await cb.answer("Ошибка", True)
+                await cb.message.edit_text(
+                    f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
+                    reply_markup=get_cart_keyboard(cb.from_user.id)
+                )
+            await cb.answer()
+
+        @dp.callback_query(F.data == "cart_cancel")
+        async def cart_cancel(cb: CallbackQuery):
+            cart = get_cart(cb.from_user.id)
+            if not cart:
+                await cb.message.delete()
+                await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+                await cb.answer()
+                return
+            total = sum(i['price'] for i in cart)
+            items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
+            await cb.message.edit_text(
+                f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
+                reply_markup=get_cart_keyboard(cb.from_user.id)
+            )
+            await cb.answer()
 
     @dp.callback_query(F.data == "checkout")
     async def checkout_cb(cb: CallbackQuery, state: FSMContext):
@@ -1211,6 +1252,9 @@ async def startup():
             await bot_instance.get_updates(offset=max_update_id + 1)
     except Exception:
         pass
+    # Активация антифлуда
+    dp_instance.message.middleware(AntiFloodMiddleware())
+    dp_instance.callback_query.middleware(AntiFloodMiddleware())
     print("Бот готов (Long Polling)")
 
 # ---------- Обработчик платёжных уведомлений CryptoBot ----------
