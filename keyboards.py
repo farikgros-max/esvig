@@ -1,6 +1,9 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from config import ADMIN_IDS, ITEMS_PER_PAGE
 
+def cancel_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
+
 def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
