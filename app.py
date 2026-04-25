@@ -19,6 +19,7 @@ from handlers.catalog import router as catalog_router
 from handlers.cart import router as cart_router
 from handlers.profile import router as profile_router
 from handlers.admin import router as admin_router
+from handlers.info import router as info_router
 
 logging.basicConfig(
     filename='bot_errors.log',
@@ -38,6 +39,7 @@ async def startup():
     dp_instance.include_router(cart_router)
     dp_instance.include_router(profile_router)
     dp_instance.include_router(admin_router)
+    dp_instance.include_router(info_router)          # ← информационные сообщения и админ-панель
     # Middleware
     dp_instance.message.middleware(SubscriptionMiddleware())
     dp_instance.message.middleware(AntiFloodMiddleware())
