@@ -15,6 +15,8 @@ Set these variables before running:
 
 > Note: legacy fallback defaults are kept in `app.py` for `BOT_TOKEN` and `ADMIN_IDS` to avoid startup regressions on old deployments.
 
+> If you see Git conflict markers around `BOT_TOKEN`/`ADMIN_IDS`, keep the variant with optional env vars and legacy fallback defaults.
+
 ## Quick check
 ```bash
 python -m py_compile app.py database.py

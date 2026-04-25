@@ -27,6 +27,8 @@ def _parse_admin_ids(raw: str):
         return []
     return [int(value.strip()) for value in raw.split(",") if value.strip()]
 
+# Backward-compatible config: env vars override defaults,
+# but legacy values remain to prevent startup/admin regressions on old deployments.
 DEFAULT_BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", DEFAULT_BOT_TOKEN)
 
