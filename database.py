@@ -6,27 +6,41 @@ import asyncio
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
 
-# ---------- Вспомогательная функция для повторных попыток ----------
+# ---------- Улучшенная повторная попытка с обработкой ошибок соединения ----------
 async def _retry_fetch(query, *args, fetch_all=True, max_retries=3, delay=0.5):
     """
-    Выполняет SELECT-запрос. Если результат пустой (пустой список для fetch_all
-    или None для fetchrow), повторяет запрос до max_retries раз с задержкой.
+    Выполняет SELECT-запрос. Если результат пустой или возникла ошибка соединения,
+    пробует переподключиться к БД и повторяет запрос.
     """
+    global pool
     for attempt in range(max_retries):
-        async with pool.acquire() as conn:
-            if fetch_all:
-                rows = await conn.fetch(query, *args)
-                if rows:
-                    return rows
-            else:
-                row = await conn.fetchrow(query, *args)
-                if row is not None:
-                    return row
+        try:
+            async with pool.acquire() as conn:
+                if fetch_all:
+                    rows = await conn.fetch(query, *args)
+                    if rows:
+                        return rows
+                else:
+                    row = await conn.fetchrow(query, *args)
+                    if row is not None:
+                        return row
+        except (OSError, asyncpg.exceptions.ConnectionDoesNotExistError, asyncpg.exceptions.InterfaceError) as e:
+            print(f"[DB] Ошибка соединения: {e}, попытка {attempt+1}")
+            if pool:
+                await pool.close()
+            pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
+        except Exception as e:
+            print(f"[DB] Неожиданная ошибка: {e}, попытка {attempt+1}")
+
         if attempt < max_retries - 1:
             await asyncio.sleep(delay * (attempt + 1))
-    # После всех попыток возвращаем то, что есть (пустой список или None)
-    async with pool.acquire() as conn:
-        return await conn.fetch(query, *args) if fetch_all else await conn.fetchrow(query, *args)
+
+    # Если все попытки провалились
+    try:
+        async with pool.acquire() as conn:
+            return await conn.fetch(query, *args) if fetch_all else await conn.fetchrow(query, *args)
+    except Exception:
+        return [] if fetch_all else None
 
 # ---------- Инициализация БД ----------
 async def init_db():
@@ -223,7 +237,7 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (с повторными попытками) ----------
+# ---------- Каналы (с улучшенной повторной попыткой) ----------
 async def get_all_channels(category_id=None):
     if category_id is not None:
         rows = await _retry_fetch(
@@ -246,6 +260,7 @@ async def get_all_channels(category_id=None):
         }
     return ch
 
+# Остальные функции (add_channel, update_channel, delete_channel, заказы и т.д.) остаются без изменений, просто добавлю их для полноты файла.
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
         await conn.execute('''
