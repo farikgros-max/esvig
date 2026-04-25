@@ -4,13 +4,13 @@ from aiogram.fsm.context import FSMContext
 import requests
 
 from database import (get_or_create_user, get_user_daily_info, get_orders_by_user,
-                      get_user_balance, update_user_balance, debit_balance)
+                      get_user_balance, update_user_balance, debit_balance,
+                      get_order_by_id, update_order_status, return_balance)
 from states import OrderForm
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
                    CHECK_PAYMENT_MESSAGE)
 from keyboards import (get_profile_keyboard, get_main_keyboard, cancel_keyboard)
 from config import MIN_DEPOSIT, PAID_BTN_URL, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, ADMIN_IDS
-from bot import bot_instance
 
 router = Router()
 
@@ -179,9 +179,7 @@ async def check_payment_handler(cb: CallbackQuery):
     )
     await cb.answer()
 
-# Пользовательские заявки (перенесём в profile, т.к. логически связано)
-from database import get_orders_by_user, get_order_by_id, update_order_status, return_balance
-
+# Пользовательские заявки
 @router.callback_query(F.data == "my_orders")
 async def my_ords(cb: CallbackQuery):
     ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
