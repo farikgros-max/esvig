@@ -39,6 +39,7 @@ class OrderForm(StatesGroup):
     waiting_for_budget = State()
     waiting_for_contact = State()
     waiting_for_deposit_amount = State()
+    processing_deposit = State()
 
 class AddChannelStates(StatesGroup):
     waiting_for_category = State()
@@ -543,7 +544,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text("👤 Мой профиль", reply_markup=get_profile_keyboard())
         await cb.answer()
 
-    @dp.message(OrderForm.waiting_for_deposit_amount)
+      @dp.message(OrderForm.waiting_for_deposit_amount)
     async def process_deposit_amount(m: Message, state: FSMContext):
         text = m.text.strip()
         try:
@@ -555,6 +556,12 @@ async def register_handlers(dp: Dispatcher):
         if amount < MIN_DEPOSIT:
             await m.answer(f"Минимальная сумма пополнения — {MIN_DEPOSIT} USDT. Попробуйте ещё раз.")
             return
+
+        # Блокировка повторного входа
+        current_state = await state.get_state()
+        if current_state == OrderForm.processing_deposit:
+            return
+        await state.set_state(OrderForm.processing_deposit)
 
         data = await state.get_data()
         method = data.get('payment_method', 'crypto')
@@ -591,13 +598,22 @@ async def register_handlers(dp: Dispatcher):
                 "numPayments": 1,
                 "expiredIn": 3600
             }
-            try:
-                r = requests.post(url, json=payload, headers=headers, timeout=10)
-                data_resp = r.json()
-                # DEBUG (можно оставить, не мешает)
-                print(f"XRocket response: {r.status_code} {r.text}")
+
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
+            data_resp = r.json()
+            if method == 'crypto':
+                if data_resp.get("ok"):
+                    invoice_url = data_resp["result"]["pay_url"]
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                    ])
+                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+                else:
+                    await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
+            else:  # xrocket
                 if data_resp.get("success"):
-                    # Ссылка на оплату находится в data.link
                     invoice_url = data_resp["data"]["link"]
                     kb = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
@@ -607,12 +623,12 @@ async def register_handlers(dp: Dispatcher):
                 else:
                     error_msg = data_resp.get("message", "Неизвестная ошибка")
                     await m.answer(f"Ошибка при создании счёта: {error_msg}", reply_markup=get_profile_keyboard())
-            except requests.exceptions.ConnectionError:
-                await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
-            except Exception as e:
-                await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
-            finally:
-                await state.clear()
+        except requests.exceptions.ConnectionError:
+            await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
+        except Exception as e:
+            await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
+        finally:
+            await state.clear()
         try:
             r = requests.post(url, json=payload, headers=headers)
             data_resp = r.json()
@@ -1184,10 +1200,17 @@ dp_instance = Dispatcher(storage=MemoryStorage())
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Удаляем вебхук Telegram, т.к. будем использовать Long Polling
+    # Удаляем вебхук и сбрасываем все старые обновления
     await bot_instance.delete_webhook(drop_pending_updates=True)
+    # Дополнительно "съедаем" оставшиеся обновления (чтобы offset точно обнулился)
+    try:
+        updates = await bot_instance.get_updates(offset=-1, limit=100, timeout=1)
+        if updates:
+            max_update_id = max(u.update_id for u in updates)
+            await bot_instance.get_updates(offset=max_update_id + 1)
+    except Exception:
+        pass
     print("Бот готов (Long Polling)")
-
 # Асинхронная обработка платёжных вебхуков
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
