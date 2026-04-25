@@ -2,8 +2,8 @@ import os
 import asyncio
 import json
 import hashlib
-import time
 import hmac
+import time
 import asyncpg
 import requests
 from aiogram import Bot, Dispatcher, F
@@ -22,19 +22,17 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
 
-def _parse_admin_ids(raw: str):
-    if not raw:
-        return []
-    return [int(value.strip()) for value in raw.split(",") if value.strip()]
+# ---------- Конфигурация ----------
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU")
+ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "7787223469,7345960167,714447317,8614748084,8702300149,8472548724")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN env var is required")
-
-ADMIN_IDS = _parse_admin_ids(os.environ.get("ADMIN_IDS", ""))
 ITEMS_PER_PAGE = 5
+SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
+# WEBHOOK_URL используется только при необходимости; сейчас не трогаем
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production.up.railway.app/webhook")
 MIN_DEPOSIT = 0.1
-PAID_BTN_URL = os.environ.get("PAID_BTN_URL", "https://t.me/esvig_bot")
+PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")
 DAILY_ORDER_LIMIT = 3
