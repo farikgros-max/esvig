@@ -61,6 +61,25 @@ class AntiFloodMiddleware(BaseMiddleware):
             last_message_time[user_id] = now
         return await handler(event, data)
 
+# ---------- Проверка подписки (Middleware) ----------
+async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        return False
+
+class SubscriptionMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if hasattr(event, 'from_user') and event.from_user:
+            # Пропускаем команды /start и /export
+            if event.text and (event.text.startswith("/start") or event.text.startswith("/export")):
+                return await handler(event, data)
+            if not await is_subscribed(bot_instance, event.from_user.id):
+                await event.answer("⚠️ Подпишитесь на канал, чтобы пользоваться ботом: /start")
+                return
+        return await handler(event, data)
+
 # ---------- Состояния ----------
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
@@ -103,23 +122,8 @@ def get_cart(uid):
 def save_cart(uid, cart):
     user_carts[uid] = cart
 
-# ---------- Проверка подписки ----------
-async def is_subscribed(bot: Bot, user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status not in ("left", "kicked")
-    except Exception:
-        return False
-
 # ---------- Обработчики ----------
 async def register_handlers(dp: Dispatcher):
-    # Проверка подписки перед любым действием
-    @dp.message(~F.text.startswith("/"))
-    async def block_unsubscribed(m: Message):
-        if not await is_subscribed(bot_instance, m.from_user.id):
-            await m.answer("⚠️ Подпишитесь на канал, чтобы пользоваться ботом: /start")
-        # Если подписан – ничего не делаем, сообщение пойдёт в другие обработчики
-
     @dp.message(Command("start"))
     async def start(m: Message):
         if not await is_subscribed(bot_instance, m.from_user.id):
@@ -735,7 +739,6 @@ async def register_handlers(dp: Dispatcher):
         await cb.answer("Категория удалена", False)
         await admin_categories_menu(cb)
 
-    # Исправленный admin_list
     @dp.callback_query(F.data == "admin_list")
     async def adm_list(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -1155,6 +1158,7 @@ async def startup():
             await bot_instance.get_updates(offset=max_update_id + 1)
     except Exception:
         pass
+    dp_instance.message.middleware(SubscriptionMiddleware())
     dp_instance.message.middleware(AntiFloodMiddleware())
     dp_instance.callback_query.middleware(AntiFloodMiddleware())
     print("Бот готов (Long Polling)")
