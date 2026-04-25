@@ -574,7 +574,7 @@ async def register_handlers(dp: Dispatcher):
                 "paid_btn_url": PAID_BTN_URL,
                 "hidden_message": f"Спасибо за пополнение, {m.from_user.first_name}!"
             }
-       else:  # xrocket
+        else:  # xrocket
             if not XROCKET_API_KEY:
                 await m.answer("Платёжная система временно недоступна.")
                 await state.clear()
@@ -589,24 +589,24 @@ async def register_handlers(dp: Dispatcher):
                 "paid_btn_url": PAID_BTN_URL,
             }
 
-            try:
-                r = requests.post(url, json=payload, headers=headers, timeout=10)
-                data_resp = r.json()
-                if data_resp.get("ok"):
-                    invoice_url = data_resp["result"]["pay_url"]
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
-                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
-                    ])
-                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
-                else:
-                    await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
-            except requests.exceptions.ConnectionError:
-                await m.answer("❌ Платёжная система XRocket временно недоступна. Попробуйте позже или используйте CryptoBot.", reply_markup=get_profile_keyboard())
-            except Exception as e:
-                await m.answer(f"❌ Ошибка XRocket: {str(e)[:300]}", reply_markup=get_profile_keyboard())
-            finally:
-                await state.clear()
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
+            data_resp = r.json()
+            if data_resp.get("ok"):
+                invoice_url = data_resp["result"]["pay_url"]
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                ])
+                await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+            else:
+                await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
+        except requests.exceptions.ConnectionError:
+            await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
+        except Exception as e:
+            await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
+        finally:
+            await state.clear()
 
         try:
             r = requests.post(url, json=payload, headers=headers)
