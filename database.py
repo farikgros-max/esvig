@@ -6,12 +6,12 @@ import asyncio
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
 
-# ---------- Улучшенная повторная попытка с выбором лучшего результата ----------
-async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=3, delay=0.5):
+# ---------- Улучшенная повторная попытка с логированием ----------
+async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=4, delay=0.8):
     """
     Выполняет SELECT-запрос до max_retries раз.
-    Если fetch_all=True, возвращает самый длинный список из всех попыток.
-    Если fetch_all=False, возвращает первый не-None результат.
+    При ошибке соединения пересоздаёт пул.
+    Возвращает лучший результат (самый длинный список для fetch_all).
     """
     best_result = [] if fetch_all else None
     for attempt in range(max_retries):
@@ -26,15 +26,18 @@ async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=3, delay=0
                     if row is not None:
                         return row
         except (OSError, asyncpg.exceptions.ConnectionDoesNotExistError,
-                asyncpg.exceptions.InterfaceError) as e:
-            print(f"[DB] Ошибка соединения: {e}, попытка {attempt+1}")
-            if pool:
-                await pool.close()
+                asyncpg.exceptions.InterfaceError, AttributeError) as e:
+            print(f"[DB] Ошибка соединения (попытка {attempt+1}): {e}")
+            try:
+                if pool:
+                    await pool.close()
+            except:
+                pass
             pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
         except Exception as e:
-            print(f"[DB] Неожиданная ошибка: {e}, попытка {attempt+1}")
-        if attempt < max_retries - 1:
-            await asyncio.sleep(delay * (attempt + 1))
+            print(f"[DB] Неожиданная ошибка (попытка {attempt+1}): {e}")
+        await asyncio.sleep(delay * (attempt + 1))
+    print(f"[DB] Итоговый размер best_result: {len(best_result)}")
     return best_result if fetch_all else None
 
 # ---------- Инициализация БД ----------
@@ -232,7 +235,7 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (теперь с выбором лучшего результата) ----------
+# ---------- Каналы (теперь с улучшенной попыткой и отладкой) ----------
 async def get_all_channels(category_id=None):
     if category_id is not None:
         rows = await _retry_fetch_best(
@@ -243,6 +246,7 @@ async def get_all_channels(category_id=None):
         rows = await _retry_fetch_best(
             'SELECT id, name, price, subscribers, url, description, category_id FROM channels', fetch_all=True
         )
+    print(f"[DEBUG] get_all_channels вернула {len(rows)} записей")
     ch = {}
     for r in rows:
         ch[r['id']] = {
@@ -255,6 +259,7 @@ async def get_all_channels(category_id=None):
         }
     return ch
 
+# Остальные функции остаются без изменений
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
         await conn.execute('''
