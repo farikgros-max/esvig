@@ -579,34 +579,32 @@ async def register_handlers(dp: Dispatcher):
                 await m.answer("Платёжная система временно недоступна.")
                 await state.clear()
                 return
-            url = "https://pay.xrocket.tg/api/v1/createInvoice"
-            headers = {"X-API-Key": XROCKET_API_KEY}
-            payload = {
-                "asset": "USDT",
-                "amount": str(amount),
-                "description": f"Пополнение баланса user_id:{m.from_user.id}",
-                "paid_btn_name": "callback",
-                "paid_btn_url": PAID_BTN_URL,
+            url = "https://pay.xrocket.tg/tg-invoices"
+            headers = {
+                "Rocket-Pay-Key": XROCKET_API_KEY,
+                "Content-Type": "application/json"
             }
-
+            payload = {
+                "amount": amount,
+                "currency": "USDT",
+                "description": f"Пополнение баланса user_id:{m.from_user.id}",
+                "numPayments": 1,
+                "expiredIn": 3600  # счёт живёт 1 час
+            }
             try:
                 r = requests.post(url, json=payload, headers=headers, timeout=10)
-                # Временный вывод в логи Railway
-                print(f"XRocket response status: {r.status_code}")
-                print(f"XRocket response body: {r.text}")
+                print(f"XRocket response: {r.status_code} {r.text}")  # для отладки, потом можно убрать
                 data_resp = r.json()
-                print(f"XRocket parsed JSON: {data_resp}")
-                
-                if data_resp.get("ok"):
-                    invoice_url = data_resp["result"]["pay_url"]
+                # В документации XRocket успешный ответ может содержать invoiceUrl или pay_url
+                invoice_url = data_resp.get("invoiceUrl") or data_resp.get("pay_url")
+                if invoice_url:
                     kb = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
                         [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
                     ])
                     await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
                 else:
-                    # Покажем пользователю детали ошибки (только при отладке)
-                    error_msg = data_resp.get("error", "Неизвестная ошибка")
+                    error_msg = data_resp.get("message", "Неизвестная ошибка")
                     await m.answer(f"Ошибка при создании счёта: {error_msg}", reply_markup=get_profile_keyboard())
             except requests.exceptions.ConnectionError:
                 await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
