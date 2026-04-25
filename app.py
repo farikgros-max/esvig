@@ -7,10 +7,9 @@ from aiohttp import web
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Update
 
-from config import BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, WEBHOOK_URL, SECRET_TOKEN
-from bot import bot_instance
+from config import (BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY,
+                    WEBHOOK_URL, SECRET_TOKEN, CHANNEL_ID)
 from database import init_db, update_user_balance
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
 
@@ -27,6 +26,8 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s:%(message)s'
 )
 
+# Инициализация бота
+bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
 async def startup():
@@ -37,7 +38,7 @@ async def startup():
     dp_instance.include_router(cart_router)
     dp_instance.include_router(profile_router)
     dp_instance.include_router(admin_router)
-    # Добавляем middleware
+    # Middleware
     dp_instance.message.middleware(SubscriptionMiddleware())
     dp_instance.message.middleware(AntiFloodMiddleware())
     dp_instance.callback_query.middleware(AntiFloodMiddleware())
@@ -52,7 +53,7 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
-# Платёжные вебхуки остаются
+# Платёжные вебхуки
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
