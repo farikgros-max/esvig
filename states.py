@@ -30,6 +30,9 @@ class AdminBalanceStates(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_amount = State()
 
-# Новое состояние для массового добавления каналов
 class MassAddStates(StatesGroup):
     waiting_for_bulk_json = State()
+
+class QuickAddStates(StatesGroup):
+    waiting_for_channel_link = State()
+    waiting_for_price = State()
