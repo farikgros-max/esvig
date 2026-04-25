@@ -43,6 +43,9 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s:%(message)s'
 )
 
+# ---------- ID канала для обязательной подписки ----------
+CHANNEL_ID = "@esvig_service"
+
 # ---------- Антифлуд ----------
 last_message_time = {}
 
@@ -100,10 +103,32 @@ def get_cart(uid):
 def save_cart(uid, cart):
     user_carts[uid] = cart
 
+# ---------- Проверка подписки ----------
+async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status not in ("left", "kicked")
+    except Exception:
+        return False
+
 # ---------- Обработчики ----------
 async def register_handlers(dp: Dispatcher):
+    # Проверка подписки перед любым действием
+    @dp.message(~F.text.startswith("/"))
+    async def block_unsubscribed(m: Message):
+        if not await is_subscribed(bot_instance, m.from_user.id):
+            await m.answer("⚠️ Подпишитесь на канал, чтобы пользоваться ботом: /start")
+        # Если подписан – ничего не делаем, сообщение пойдёт в другие обработчики
+
     @dp.message(Command("start"))
     async def start(m: Message):
+        if not await is_subscribed(bot_instance, m.from_user.id):
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],
+                [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")]
+            ])
+            await m.answer("⚠️ Чтобы пользоваться ботом, подпишитесь на наш канал.", reply_markup=kb)
+            return
         user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = WELCOME_CAPTION.format(user_name=user_name, balance=user['balance'])
@@ -116,12 +141,50 @@ async def register_handlers(dp: Dispatcher):
         except:
             await m.answer(caption, reply_markup=get_main_keyboard(m.from_user.id))
 
+    @dp.callback_query(F.data == "check_sub")
+    async def check_sub(cb: CallbackQuery):
+        if await is_subscribed(cb.bot, cb.from_user.id):
+            await cb.answer("✅ Подписка подтверждена!")
+            await start(cb.message)
+        else:
+            await cb.answer("❌ Вы ещё не подписались. Попробуйте снова.", show_alert=True)
+
     @dp.message(F.text == "🔑 Админ‑панель")
     async def admin_panel_msg(m: Message):
         if m.from_user.id in ADMIN_IDS:
             await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
         else:
             await m.answer("Нет прав")
+
+    # ========== Экспорт заказов ==========
+    @dp.message(Command("export"))
+    async def export_orders(m: Message):
+        if m.from_user.id not in ADMIN_IDS:
+            await m.answer("⛔ Нет доступа")
+            return
+        await m.answer("⏳ Формирую отчёт...")
+        try:
+            orders = await get_orders(limit=10000)
+            if not orders:
+                await m.answer("Заказов нет.")
+                return
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Заказы ESVIG"
+            headers = ["ID", "User ID", "Username", "Сумма", "Статус", "Дата", "Состав"]
+            ws.append(headers)
+            for o in orders:
+                items = "; ".join([f"{it['name']}({it['price']}$)" for it in o['cart']])
+                ws.append([o['id'], o['user_id'], o['username'], o['total'], o['status'], str(o['created_at']), items])
+            filename = "orders_export.xlsx"
+            wb.save(filename)
+            file = FSInputFile(filename)
+            await m.answer_document(file, caption="📋 Все заказы")
+            os.remove(filename)
+        except Exception as e:
+            await m.answer(f"❌ Ошибка экспорта: {e}")
+            logging.error(f"Export error: {e}")
 
     # ========== Каталог ==========
     @dp.message(F.text == "📋 Каталог каналов")
