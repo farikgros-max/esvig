@@ -8,14 +8,13 @@ from database import get_or_create_user
 from texts import WELCOME_CAPTION
 from keyboards import get_main_keyboard, get_admin_keyboard
 from middlewares import is_subscribed
-from bot import bot_instance
-from config import CHANNEL_ID
+from config import CHANNEL_ID, ADMIN_IDS
 
 router = Router()
 
 @router.message(Command("start"))
 async def start(m: Message):
-    if not await is_subscribed(m.from_user.id):
+    if not await is_subscribed(m.bot, m.from_user.id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],
             [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")]
@@ -37,7 +36,7 @@ async def start(m: Message):
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub(cb: CallbackQuery):
-    if await is_subscribed(cb.from_user.id):
+    if await is_subscribed(cb.bot, cb.from_user.id):
         await cb.answer("✅ Подписка подтверждена!")
         await start(cb.message)
     else:
@@ -46,13 +45,12 @@ async def check_sub(cb: CallbackQuery):
 # Команда /export
 @router.message(Command("export"))
 async def export_orders(m: Message):
-    from config import ADMIN_IDS
-    from database import get_orders
     if m.from_user.id not in ADMIN_IDS:
         await m.answer("⛔ Нет доступа")
         return
     await m.answer("⏳ Формирую отчёт...")
     try:
+        from database import get_orders
         orders = await get_orders(limit=10000)
         if not orders:
             await m.answer("Заказов нет.")
