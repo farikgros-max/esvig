@@ -27,9 +27,8 @@ def _parse_admin_ids(raw: str):
         return []
     return [int(value.strip()) for value in raw.split(",") if value.strip()]
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN env var is required")
+DEFAULT_BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", DEFAULT_BOT_TOKEN)
 
 DEFAULT_ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 ADMIN_IDS = _parse_admin_ids(os.environ.get("ADMIN_IDS", "")) or DEFAULT_ADMIN_IDS
