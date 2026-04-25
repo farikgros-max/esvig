@@ -1232,8 +1232,8 @@ def xrocket_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
-        return jsonify({'status': 'unauthorized'}), 401
+    # if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+    #    return jsonify({'status': 'unauthorized'}), 401
     upd = Update(**request.json)
     loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
     return jsonify({'status': 'ok'})
