@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import hashlib
+import time
 import hmac
 import asyncpg
 import requests
@@ -888,16 +889,21 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer("Канал не найден", True)
 
     # ========== ДОБАВЛЕНИЕ КАНАЛА ==========
+       # ========== ДОБАВЛЕНИЕ КАНАЛА (полный рабочий блок) ==========
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard("add_chan_cat"))
         await state.set_state(AddChannelStates.waiting_for_category)
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("add_chan_cat_"), AddChannelStates.waiting_for_category)
     async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
-        if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+        if cb.from_user.id not in ADMIN_IDS:
+            await cb.answer("Нет прав", show_alert=True)
+            return
         cat_id = int(cb.data.split("_")[3])
         await state.update_data(category_id=cat_id)
         await cb.message.edit_text("Введите название канала:", reply_markup=cancel_keyboard())
@@ -912,14 +918,18 @@ async def register_handlers(dp: Dispatcher):
 
     @dp.message(AddChannelStates.waiting_for_price)
     async def a_price(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         await state.update_data(price=int(m.text))
         await m.answer("Введите количество подписчиков (число):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_subscribers)
 
     @dp.message(AddChannelStates.waiting_for_subscribers)
     async def a_subs(m: Message, state: FSMContext):
-        if not m.text.isdigit(): await m.answer("Введите число"); return
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
         await state.update_data(subscribers=int(m.text))
         await m.answer("Введите ссылку (https://t.me/...):", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_url)
@@ -927,7 +937,9 @@ async def register_handlers(dp: Dispatcher):
     @dp.message(AddChannelStates.waiting_for_url)
     async def a_url(m: Message, state: FSMContext):
         url = m.text.strip()
-        if not url.startswith("https://t.me/"): await m.answer("Ссылка должна начинаться с https://t.me/"); return
+        if not url.startswith("https://t.me/"):
+            await m.answer("Ссылка должна начинаться с https://t.me/")
+            return
         await state.update_data(url=url)
         await m.answer("Введите описание канала:", reply_markup=cancel_keyboard())
         await state.set_state(AddChannelStates.waiting_for_description)
@@ -936,7 +948,7 @@ async def register_handlers(dp: Dispatcher):
     async def a_desc(m: Message, state: FSMContext):
         await state.update_data(description=m.text)
         data = await state.get_data()
-        new_id = f"channel_{int(str(time.time())[-6:])}"
+        new_id = f"channel_{int(time.time())}"
         cat_id = data['category_id']
         await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
         await load_channels()
