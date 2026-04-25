@@ -20,11 +20,14 @@ def get_admin_keyboard():
          InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
         [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add"),
          InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
+        [InlineKeyboardButton(text="⚡ Быстрое добавление", callback_data="quick_add"),
+         InlineKeyboardButton(text="📥 Массовое добавление", callback_data="bulk_add")],
         [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
     ])
 
+# Все остальные функции оставьте без изменений
 async def get_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
     if not cats:
