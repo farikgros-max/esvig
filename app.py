@@ -35,13 +35,11 @@ def _parse_admin_ids(raw: str):
         return []
     return [int(value.strip()) for value in raw.split(",") if value.strip()]
 
-# Legacy-safe defaults: keep bot/admin access working on old deployments.
-DEFAULT_BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
-BOT_TOKEN = os.environ.get("BOT_TOKEN", DEFAULT_BOT_TOKEN)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is required")
 
-DEFAULT_ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
-ENV_ADMIN_IDS = _parse_admin_ids(os.environ.get("ADMIN_IDS", ""))
-ADMIN_IDS = sorted(set(DEFAULT_ADMIN_IDS + ENV_ADMIN_IDS))
+ADMIN_IDS = _parse_admin_ids(os.environ.get("ADMIN_IDS", ""))
 ITEMS_PER_PAGE = 5
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = os.environ.get("PAID_BTN_URL", "https://t.me/esvig_bot")
