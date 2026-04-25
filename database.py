@@ -6,39 +6,6 @@ import asyncio
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
 
-# ---------- Быстрая и надёжная загрузка данных ----------
-async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=4, delay=0.8):
-    """
-    Выполняет SELECT-запрос. Если результат непустой - сразу возвращает.
-    При пустом результате пересоздаёт пул и пробует снова (до max_retries раз).
-    """
-    global pool
-    for attempt in range(max_retries):
-        try:
-            async with pool.acquire() as conn:
-                if fetch_all:
-                    rows = await conn.fetch(query, *args)
-                    if rows:
-                        return rows
-                else:
-                    row = await conn.fetchrow(query, *args)
-                    if row is not None:
-                        return row
-        except (OSError, asyncpg.exceptions.ConnectionDoesNotExistError,
-                asyncpg.exceptions.InterfaceError, AttributeError) as e:
-            print(f"[DB] Ошибка соединения (попытка {attempt+1}): {e}")
-            try:
-                if pool:
-                    await pool.close()
-            except:
-                pass
-            pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
-        except Exception as e:
-            print(f"[DB] Неожиданная ошибка (попытка {attempt+1}): {e}")
-        await asyncio.sleep(delay * (attempt + 1))
-    # Если все попытки провалились, возвращаем пустой результат
-    return [] if fetch_all else None
-
 # ---------- Инициализация БД ----------
 async def init_db():
     global pool
@@ -121,7 +88,7 @@ async def close_db():
         await pool.close()
         pool = None
 
-# ---------- Пользователи и баланс ----------
+# ---------- Пользователи и баланс (используют пул) ----------
 async def get_or_create_user(user_id: int, username: str = None):
     async with pool.acquire() as conn:
         user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
@@ -219,41 +186,37 @@ async def get_user_daily_info(user_id: int):
             used = row['daily_orders_count']
         return row['daily_limit'], used
 
-# ---------- Категории ----------
+# ========== КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: категории и каналы всегда загружаются через отдельное соединение ==========
 async def get_all_categories():
-    rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
-    if not rows:
-        # Если категорий нет, создаём стандартные и пробуем снова
-        async with pool.acquire() as conn:
+    """Безопасная загрузка категорий с отдельным соединением."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
+        if not rows:
+            # Создаём стандартные категории
             await _ensure_default_categories(conn)
-        rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
+            rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
+    finally:
+        await conn.close()
     return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
 
-async def add_category(name, display_name):
-    async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', name, display_name)
-
-async def delete_category(cat_id):
-    async with pool.acquire() as conn:
-        await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
-        await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
-
-async def get_category_by_id(cat_id):
-    async with pool.acquire() as conn:
-        r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
-        return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
-
-# ---------- Каналы (теперь работает мгновенно) ----------
 async def get_all_channels(category_id=None):
-    if category_id is not None:
-        rows = await _retry_fetch_best(
-            'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
-            category_id, fetch_all=True
-        )
-    else:
-        rows = await _retry_fetch_best(
-            'SELECT id, name, price, subscribers, url, description, category_id FROM channels', fetch_all=True
-        )
+    """Безопасная загрузка каналов с отдельным соединением."""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        if category_id is not None:
+            rows = await conn.fetch(
+                'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
+                category_id
+            )
+        else:
+            rows = await conn.fetch(
+                'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
+            )
+    finally:
+        await conn.close()
+
+    print(f"[DEBUG] get_all_channels вернула {len(rows)} записей")
     ch = {}
     for r in rows:
         ch[r['id']] = {
@@ -265,6 +228,9 @@ async def get_all_channels(category_id=None):
             "category_id": r['category_id']
         }
     return ch
+
+# Остальные функции остаются без изменений (add_channel, update_channel, delete_channel, заказы...)
+# Они используют пул, так как пишут в БД и там стабильность соединения не критична.
 
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
