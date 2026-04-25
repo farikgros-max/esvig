@@ -544,7 +544,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.edit_text("👤 Мой профиль", reply_markup=get_profile_keyboard())
         await cb.answer()
       
-      @dp.message(OrderForm.waiting_for_deposit_amount)
+    @dp.message(OrderForm.waiting_for_deposit_amount)
         async def process_deposit_amount(m: Message, state: FSMContext):
             text = m.text.strip()
             try:
