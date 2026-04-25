@@ -92,20 +92,18 @@ async def admin_del_category(cb: CallbackQuery):
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов и действия с ними ----------
+# ---------- Список каналов (исправленная версия) ----------
 @router.callback_query(F.data == "admin_list")
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     ch = await get_all_channels()
-    attempts = 0
-    while len(ch) < 2 and attempts < 3:
-        await asyncio.sleep(0.5)
+    # Если список пуст, пробуем ещё раз после паузы (база могла не ответить)
+    if not ch:
+        await asyncio.sleep(1)
         ch = await get_all_channels()
-        attempts += 1
-    print(f"[DEBUG] admin_list: получено каналов = {len(ch)} (попыток: {attempts})")
     if not ch:
         await cb.message.delete()
-        await cb.message.answer("Список каналов пуст", reply_markup=get_main_keyboard(cb.from_user.id))
+        await cb.message.answer("❌ Не удалось загрузить каналы. Попробуйте позже.", reply_markup=get_main_keyboard(cb.from_user.id))
         await cb.answer()
         return
     await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
