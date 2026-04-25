@@ -808,6 +808,7 @@ flask_app = Flask(__name__)
 app = flask_app
 
 bot_instance = Bot(token=BOT_TOKEN)
+print(f"XROCKET_API_KEY is set: {bool(XROCKET_API_KEY)}")
 dp_instance = Dispatcher(storage=MemoryStorage())
 
 async def startup():
