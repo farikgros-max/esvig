@@ -22,16 +22,24 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
 
-BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
-ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
+def _parse_admin_ids(raw: str):
+    if not raw:
+        return []
+    return [int(value.strip()) for value in raw.split(",") if value.strip()]
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is required")
+
+ADMIN_IDS = _parse_admin_ids(os.environ.get("ADMIN_IDS", ""))
 ITEMS_PER_PAGE = 5
 MIN_DEPOSIT = 0.1
-PAID_BTN_URL = "https://t.me/esvig_bot"
+PAID_BTN_URL = os.environ.get("PAID_BTN_URL", "https://t.me/esvig_bot")
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
-XROCKET_API_KEY = "56ddd1419e9215489721f9a8"
+XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")
 DAILY_ORDER_LIMIT = 3
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-WEBHOOK_URL = "https://esvig-production.up.railway.app/webhook"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production.up.railway.app/webhook")
 
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
