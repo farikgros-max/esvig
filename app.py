@@ -1222,6 +1222,9 @@ def xrocket_webhook():
 
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-loop.run_until_complete(startup())
+loop.run_until_complete(init_db())
+
+if __name__ == "__main__":
+    loop.run_until_complete(startup())
 
 application = app
