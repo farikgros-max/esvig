@@ -28,11 +28,6 @@ async def init_db():
                 description TEXT DEFAULT '',
                 category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
             )''')
-        # Добавляем колонки для метрик, если их ещё нет
-        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS er REAL DEFAULT 0')
-        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS views_avg INTEGER DEFAULT 0')
-        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ')
-
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
@@ -50,14 +45,12 @@ async def init_db():
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 balance INTEGER DEFAULT 0,
+                daily_limit INTEGER DEFAULT 3,
+                daily_orders_count INTEGER DEFAULT 0,
+                last_order_date DATE DEFAULT CURRENT_DATE,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-        # Новые поля для дневного лимита
-        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_limit INTEGER DEFAULT 3')
-        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_orders_count INTEGER DEFAULT 0')
-        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT CURRENT_DATE')
-
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -94,7 +87,6 @@ async def get_or_create_user(user_id: int, username: str = None):
     async with pool.acquire() as conn:
         user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
         if not user:
-            # При создании пользователя устанавливаем лимит по умолчанию 3
             await conn.execute(
                 'INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date) VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)',
                 user_id, username
@@ -159,15 +151,13 @@ async def get_user_transactions(user_id, limit=10):
         )
         return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
 
-# ---------- Дневной лимит заявок ----------
+# ---------- Дневной лимит ----------
 async def check_daily_order_limit(user_id: int) -> bool:
-    """Возвращает True, если можно создать заявку, и увеличивает счётчик. Иначе False."""
     async with pool.acquire() as conn:
         user = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
         if not user:
             return False
         today = await conn.fetchval('SELECT CURRENT_DATE')
-        # Если дата последней заявки не сегодня, сбрасываем счётчик
         if user['last_order_date'] != today:
             await conn.execute('UPDATE users SET daily_orders_count = 0, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
             count = 0
@@ -175,12 +165,10 @@ async def check_daily_order_limit(user_id: int) -> bool:
             count = user['daily_orders_count']
         if count >= user['daily_limit']:
             return False
-        # Увеличиваем счётчик
         await conn.execute('UPDATE users SET daily_orders_count = daily_orders_count + 1, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
         return True
 
 async def get_user_daily_info(user_id: int):
-    """Возвращает (лимит, использовано за сегодня)."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
         if not row:
@@ -192,7 +180,7 @@ async def get_user_daily_info(user_id: int):
             used = row['daily_orders_count']
         return row['daily_limit'], used
 
-# ---------- Категории, каналы, заказы ----------
+# ---------- Категории ----------
 async def get_all_categories():
     async with pool.acquire() as conn:
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -212,15 +200,16 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
+# ---------- Каналы ----------
 async def get_all_channels(category_id=None):
     async with pool.acquire() as conn:
         if category_id:
             rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id, er, views_avg, last_updated FROM channels WHERE category_id = $1',
+                'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
                 category_id
             )
         else:
-            rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id, er, views_avg, last_updated FROM channels')
+            rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
         ch = {}
         for r in rows:
             ch[r['id']] = {
@@ -229,10 +218,7 @@ async def get_all_channels(category_id=None):
                 "subscribers": r['subscribers'],
                 "url": r['url'],
                 "description": r['description'] or "",
-                "category_id": r['category_id'],
-                "er": r['er'] or 0,
-                "views_avg": r['views_avg'] or 0,
-                "last_updated": str(r['last_updated']) if r['last_updated'] else None
+                "category_id": r['category_id']
             }
         return ch
 
@@ -263,6 +249,7 @@ async def delete_channel(ch_id):
     async with pool.acquire() as conn:
         await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
 
+# ---------- Заказы ----------
 async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     async with pool.acquire() as conn:
         cart_json = json.dumps(cart)
@@ -278,9 +265,9 @@ async def get_orders(limit=20):
             'SELECT id, user_id, username, cart, total, budget, contact, status, created_at FROM orders ORDER BY created_at DESC LIMIT $1',
             limit
         )
-        return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'], "cart": json.loads(r['cart']),
-                 "total": r['total'], "budget": r['budget'], "contact": r['contact'], "status": r['status'],
-                 "created_at": str(r['created_at'])} for r in rows]
+        return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'],
+                 "cart": json.loads(r['cart']), "total": r['total'], "budget": r['budget'],
+                 "contact": r['contact'], "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
 
 async def get_orders_by_user(user_id, limit=5, only_completed=False):
     async with pool.acquire() as conn:
@@ -294,8 +281,8 @@ async def get_orders_by_user(user_id, limit=5, only_completed=False):
                 'SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
                 user_id, limit
             )
-        return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']), "status": r['status'],
-                 "created_at": str(r['created_at'])} for r in rows]
+        return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']),
+                 "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
 
 async def update_order_status(order_id, new_status):
     async with pool.acquire() as conn:
@@ -321,11 +308,3 @@ async def clear_all_orders():
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
         await conn.execute("DELETE FROM orders")
-
-# ---------- Метрики каналов ----------
-async def update_channel_metrics_db(ch_id, subscribers, er, views_avg):
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE channels SET subscribers=$1, er=$2, views_avg=$3, last_updated=NOW() WHERE id=$4",
-            subscribers, er, views_avg, ch_id
-        )
