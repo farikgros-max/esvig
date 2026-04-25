@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-                           ReplyKeyboardMarkup, KeyboardButton, FSInputFile)
+                           FSInputFile)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -29,6 +29,13 @@ from config import (BOT_TOKEN, ADMIN_IDS, ITEMS_PER_PAGE, MIN_DEPOSIT,
                     DAILY_ORDER_LIMIT, PAID_BTN_URL, WEBHOOK_URL,
                     CRYPTO_BOT_TOKEN, XROCKET_API_KEY, SECRET_TOKEN)
 from texts import *
+from keyboards import (get_main_keyboard, get_admin_keyboard, get_categories_keyboard,
+                       get_catalog_keyboard, get_channel_view_keyboard, get_cart_keyboard,
+                       get_back_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
+                       get_admin_orders_keyboard, get_edit_channel_keyboard, get_profile_keyboard,
+                       get_stats_keyboard, get_categories_admin_keyboard,
+                       get_category_actions_keyboard, get_category_selection_keyboard,
+                       cancel_keyboard)
 
 logging.basicConfig(
     filename='bot_errors.log',
@@ -93,195 +100,6 @@ def get_cart(uid):
 def save_cart(uid, cart):
     user_carts[uid] = cart
 
-def cancel_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
-
-# ---------- Клавиатуры ----------
-def get_main_keyboard(user_id: int = None):
-    buttons = [
-        [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
-        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
-    ]
-    if user_id in ADMIN_IDS:
-        buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-def get_admin_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list"),
-         InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
-        [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add"),
-         InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
-        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
-         InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
-    ])
-
-async def get_categories_keyboard():
-    cats = await get_all_categories()
-    if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
-    rows = []
-    for i in range(0, len(cats), 2):
-        row = []
-        row.append(InlineKeyboardButton(
-            text=cats[i]['display_name'],
-            callback_data=f"category_select_{cats[i]['id']}"
-        ))
-        if i+1 < len(cats):
-            row.append(InlineKeyboardButton(
-                text=cats[i+1]['display_name'],
-                callback_data=f"category_select_{cats[i+1]['id']}"
-            ))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
-    if not channels_dict:
-        return None, 0, 0
-    items = list(channels_dict.items())
-    if sort_by == "price_asc":
-        items = sorted(items, key=lambda x: x[1]['price'])
-    elif sort_by == "price_desc":
-        items = sorted(items, key=lambda x: x[1]['price'], reverse=True)
-    elif sort_by == "subs_asc":
-        items = sorted(items, key=lambda x: x[1]['subscribers'])
-    elif sort_by == "subs_desc":
-        items = sorted(items, key=lambda x: x[1]['subscribers'], reverse=True)
-
-    tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    if page < 0: page = 0
-    if page >= tot: page = tot - 1
-    start = page * ITEMS_PER_PAGE
-    end = start + ITEMS_PER_PAGE
-    btns = []
-    if len(items) > 1:
-        sort_row = [
-            InlineKeyboardButton(text="🔽 Цена", callback_data=f"sort_{category_id}_price_asc_{page}"),
-            InlineKeyboardButton(text="🔼 Цена", callback_data=f"sort_{category_id}_price_desc_{page}"),
-            InlineKeyboardButton(text="🔽 Подп.", callback_data=f"sort_{category_id}_subs_asc_{page}"),
-            InlineKeyboardButton(text="🔼 Подп.", callback_data=f"sort_{category_id}_subs_desc_{page}")
-        ]
-        btns.append(sort_row)
-    for cid, inf in items[start:end]:
-        btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"channel_view_{cid}")])
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page}_{sort_by}"))
-    if page < tot - 1:
-        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}_{sort_by}"))
-    if nav: btns.append(nav)
-    btns.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")])
-    return InlineKeyboardMarkup(inline_keyboard=btns), page, tot
-
-def get_channel_view_keyboard(cid):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить в корзину", callback_data=f"cart_add_{cid}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_catalog")]
-    ])
-
-def get_cart_keyboard(uid):
-    cart = get_cart(uid)
-    if not cart: return None
-    btns = []
-    for idx, it in enumerate(cart):
-        btns.append([InlineKeyboardButton(text=f"❌ Удалить {it['name']} ({it['price']}$)", callback_data=f"remove_{idx}")])
-    btns.append([InlineKeyboardButton(text="💳 Перейти к оформлению", callback_data="checkout")])
-    btns.append([InlineKeyboardButton(text="🗑 Очистить корзину", callback_data="clear_cart")])
-    return InlineKeyboardMarkup(inline_keyboard=btns)
-
-def get_back_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
-
-def get_admin_list_keyboard(channels_dict):
-    if not channels_dict: return None
-    btns = []
-    for cid, inf in channels_dict.items():
-        btns.append([InlineKeyboardButton(text=f"{inf['name']} | {inf['price']}$ | {inf['subscribers']} подп.", callback_data=f"admin_view_{cid}")])
-    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=btns)
-
-def get_admin_remove_keyboard(channels_dict):
-    if not channels_dict: return None
-    btns = []
-    for cid, inf in channels_dict.items():
-        btns.append([InlineKeyboardButton(text=f"❌ {inf['name']} ({inf['price']}$)", callback_data=f"admin_del_{cid}")])
-    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=btns)
-
-def get_admin_orders_keyboard(orders):
-    if not orders: return None
-    btns = []
-    for o in orders:
-        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(o['status'],'⚪')
-        btns.append([InlineKeyboardButton(text=f"{emoji} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
-    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=btns)
-
-def get_edit_channel_keyboard(cid):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Название", callback_data=f"edit_{cid}_name")],
-        [InlineKeyboardButton(text="✏️ Цена", callback_data=f"edit_{cid}_price")],
-        [InlineKeyboardButton(text="✏️ Подписчики", callback_data=f"edit_{cid}_subscribers")],
-        [InlineKeyboardButton(text="✏️ Ссылка", callback_data=f"edit_{cid}_url")],
-        [InlineKeyboardButton(text="✏️ Описание", callback_data=f"edit_{cid}_description")],
-        [InlineKeyboardButton(text="✏️ Категория", callback_data=f"edit_{cid}_category")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_view_{cid}")]
-    ])
-
-def get_profile_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders")],
-        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")],
-        [InlineKeyboardButton(text="🔍 Проверить платёж", callback_data="check_payment")]
-    ])
-
-def get_stats_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Очистить неуспешные", callback_data="confirm_clear_failed")],
-        [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")]
-    ])
-
-async def get_categories_admin_keyboard():
-    cats = await get_all_categories()
-    if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
-        ])
-    rows = []
-    for i in range(0, len(cats), 2):
-        row = []
-        row.append(InlineKeyboardButton(text=f"{cats[i]['display_name']} ({cats[i]['name']})", callback_data=f"admin_category_{cats[i]['id']}"))
-        if i+1 < len(cats):
-            row.append(InlineKeyboardButton(text=f"{cats[i+1]['display_name']} ({cats[i+1]['name']})", callback_data=f"admin_category_{cats[i+1]['id']}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")])
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def get_category_actions_keyboard(cat_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Удалить категорию", callback_data=f"admin_del_category_{cat_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_categories")]
-    ])
-
-async def get_category_selection_keyboard(callback_prefix):
-    cats = await get_all_categories()
-    if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
-    rows = []
-    for i in range(0, len(cats), 2):
-        row = []
-        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"{callback_prefix}_{cats[i]['id']}"))
-        if i+1 < len(cats):
-            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"{callback_prefix}_{cats[i+1]['id']}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
 # ---------- Обработчики ----------
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
@@ -312,7 +130,7 @@ async def register_handlers(dp: Dispatcher):
         if not cats:
             await m.answer("Категории не найдены")
             return
-        await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard(get_all_categories))
 
     @dp.callback_query(F.data.startswith("category_select_"))
     async def select_category(cb: CallbackQuery):
@@ -348,7 +166,7 @@ async def register_handlers(dp: Dispatcher):
             await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
             return
-        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard(get_all_categories))
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("view_catalog_page_"))
@@ -373,7 +191,7 @@ async def register_handlers(dp: Dispatcher):
             await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
             await cb.answer()
             return
-        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard(get_all_categories))
         await cb.answer()
 
     @dp.callback_query(F.data == "back_to_main_menu")
@@ -407,7 +225,7 @@ async def register_handlers(dp: Dispatcher):
         save_cart(cb.from_user.id, cart)
         await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
 
-    # ========== Корзина (с подтверждением удаления) ==========
+    # ========== Корзина ==========
     @dp.message(F.text == "🛒 Корзина")
     async def cart(m: Message):
         c = get_cart(m.from_user.id)
@@ -416,7 +234,7 @@ async def register_handlers(dp: Dispatcher):
             return
         total = sum(i['price'] for i in c)
         items_str = "\n".join(f"{idx+1}. {i['name']} — {i['price']}$" for idx,i in enumerate(c))
-        await m.answer(f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$", reply_markup=get_cart_keyboard(m.from_user.id))
+        await m.answer(f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$", reply_markup=get_cart_keyboard(c))
 
     @dp.callback_query(F.data == "clear_cart")
     async def clear_cart(cb: CallbackQuery):
@@ -461,7 +279,7 @@ async def register_handlers(dp: Dispatcher):
             items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
             await cb.message.edit_text(
                 f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
-                reply_markup=get_cart_keyboard(cb.from_user.id)
+                reply_markup=get_cart_keyboard(cart)
             )
         await cb.answer()
 
@@ -477,7 +295,7 @@ async def register_handlers(dp: Dispatcher):
         items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
         await cb.message.edit_text(
             f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
-            reply_markup=get_cart_keyboard(cb.from_user.id)
+            reply_markup=get_cart_keyboard(cart)
         )
         await cb.answer()
 
@@ -803,7 +621,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "admin_categories")
     async def admin_categories_menu(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-        await cb.message.edit_text("🏷 Управление категориями", reply_markup=await get_categories_admin_keyboard())
+        await cb.message.edit_text("🏷 Управление категориями", reply_markup=await get_categories_admin_keyboard(get_all_categories))
         await cb.answer()
 
     @dp.callback_query(F.data == "admin_add_category")
@@ -854,12 +672,11 @@ async def register_handlers(dp: Dispatcher):
         await cb.answer("Категория удалена", False)
         await admin_categories_menu(cb)
 
-    # ↓↓↓ ИСПРАВЛЕННЫЙ admin_list ↓↓↓
+    # Исправленный admin_list
     @dp.callback_query(F.data == "admin_list")
     async def adm_list(cb: CallbackQuery):
         if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
         ch = await get_all_channels()
-        # Если вернулось подозрительно мало каналов — ждём и пробуем ещё раз
         if len(ch) < 2:
             await asyncio.sleep(0.2)
             ch = await get_all_channels()
@@ -871,7 +688,6 @@ async def register_handlers(dp: Dispatcher):
             return
         await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
         await cb.answer()
-    # ↑↑↑ конец исправленного блока ↑↑↑
 
     @dp.callback_query(F.data.startswith("admin_view_"))
     async def adm_view_chan(cb: CallbackQuery):
@@ -911,7 +727,7 @@ async def register_handlers(dp: Dispatcher):
         if cid not in ch: await cb.answer("Канал не найден", True); return
         await state.update_data(ch_id=cid, field=field)
         if field == 'category':
-            await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(f"edit_chan_cat_{cid}"))
+            await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(get_all_categories, f"edit_chan_cat_{cid}"))
             await state.set_state(EditChannelStates.waiting_for_category)
         else:
             prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новое количество подписчиков (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
@@ -1011,7 +827,7 @@ async def register_handlers(dp: Dispatcher):
         if cb.from_user.id not in ADMIN_IDS:
             await cb.answer("Нет прав", show_alert=True)
             return
-        await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard("add_chan_cat"))
+        await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard(get_all_categories, "add_chan_cat"))
         await state.set_state(AddChannelStates.waiting_for_category)
         await cb.answer()
 
