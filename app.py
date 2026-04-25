@@ -1158,7 +1158,7 @@ async def startup():
     await init_db()
     await register_handlers(dp_instance)
     # Устанавливаем вебхук с новым URL и сбрасываем старые обновления
-    await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN, drop_pending_updates=True)
+    await bot_instance.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
     print(f"Webhook set to {WEBHOOK_URL}")
     print("Бот готов")
 
