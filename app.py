@@ -40,7 +40,7 @@ class AntiFloodMiddleware(BaseMiddleware):
             now = datetime.now()
             if user_id in last_message_time:
                 elapsed = now - last_message_time[user_id]
-                if elapsed < timedelta(seconds=2):
+                if elapsed < timedelta(seconds=1):   # ← было 2, стало 1
                     return
             last_message_time[user_id] = now
         return await handler(event, data)
@@ -328,98 +328,123 @@ async def register_handlers(dp: Dispatcher):
             return
         await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard())
 
-    @dp.callback_query(F.data.startswith("category_select_"))
+        @dp.callback_query(F.data.startswith("category_select_"))
     async def select_category(cb: CallbackQuery):
-        cat_id = int(cb.data.split("_")[2])
-        ch = await get_all_channels(cat_id)
-        if not ch:
-            await cb.message.edit_text("В этой категории пока нет каналов.",
-                                       reply_markup=InlineKeyboardMarkup(
-                                           inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
-            await cb.answer()
+        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
             return
-        kb, page, total = get_catalog_keyboard(ch, cat_id, 0)
-        await cb.message.edit_text(f"📢 Каналы в категории (страница 1/{total})", reply_markup=kb)
-        await cb.answer()
-
-    @dp.callback_query(F.data.startswith("sort_"))
-    async def sort_catalog(cb: CallbackQuery):
-        parts = cb.data.split("_")
-        cat_id = int(parts[1])
-        field = parts[2]
-        order = parts[3]
-        page = int(parts[4])
-        sort_key = f"{field}_{order}"
-        ch = await get_all_channels(cat_id)
-        kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_key)
-        await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
-        await cb.answer()
-
-    @dp.callback_query(F.data == "back_to_categories")
-    async def back_to_categories(cb: CallbackQuery):
-        cats = await get_all_categories()
-        if not cats:
-            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
+        # Ставим блокировку
+        if cb.from_user.id not in user_carts:
+            user_carts[cb.from_user.id] = []
+        user_carts[cb.from_user.id].append({"_nav_lock": True})
+        try:
+            cat_id = int(cb.data.split("_")[2])
+            ch = await get_all_channels(cat_id)
+            if not ch:
+                await cb.message.edit_text("В этой категории пока нет каналов.",
+                                           reply_markup=InlineKeyboardMarkup(
+                                               inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
+                await cb.answer()
+                return
+            kb, page, total = get_catalog_keyboard(ch, cat_id, 0)
+            await cb.message.edit_text(f"📢 Каналы в категории (страница 1/{total})", reply_markup=kb)
             await cb.answer()
-            return
-        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
-        await cb.answer()
+        finally:
+            if cb.from_user.id in user_carts:
+                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
     @dp.callback_query(F.data.startswith("view_catalog_page_"))
     async def view_catalog_page(cb: CallbackQuery):
-        parts = cb.data.split("_")
-        cat_id = int(parts[3])
-        page = int(parts[4])
-        sort_by = parts[5] if len(parts) > 5 else "default"
-        ch = await get_all_channels(cat_id)
-        kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_by)
-        if kb:
-            await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
-        else:
-            await cb.message.edit_text("Каталог пуст", reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
-        await cb.answer()
-
-    @dp.callback_query(F.data == "back_to_catalog")
-    async def back_to_catalog(cb: CallbackQuery):
-        cats = await get_all_categories()
-        if not cats:
-            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
-            await cb.answer()
+        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
             return
-        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
-        await cb.answer()
+        if cb.from_user.id not in user_carts:
+            user_carts[cb.from_user.id] = []
+        user_carts[cb.from_user.id].append({"_nav_lock": True})
+        try:
+            parts = cb.data.split("_")
+            cat_id = int(parts[3])
+            page = int(parts[4])
+            sort_by = parts[5] if len(parts) > 5 else "default"
+            ch = await get_all_channels(cat_id)
+            kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_by)
+            if kb:
+                await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+            else:
+                await cb.message.edit_text("Каталог пуст", reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
+            await cb.answer()
+        finally:
+            if cb.from_user.id in user_carts:
+                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
-    @dp.callback_query(F.data == "back_to_main_menu")
-    async def back_main_menu(cb: CallbackQuery):
-        await cb.message.delete()
-        await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard(cb.from_user.id))
-        await cb.answer()
+    @dp.callback_query(F.data.startswith("sort_"))
+    async def sort_catalog(cb: CallbackQuery):
+        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
+            return
+        if cb.from_user.id not in user_carts:
+            user_carts[cb.from_user.id] = []
+        user_carts[cb.from_user.id].append({"_nav_lock": True})
+        try:
+            parts = cb.data.split("_")
+            cat_id = int(parts[1])
+            field = parts[2]
+            order = parts[3]
+            page = int(parts[4])
+            sort_key = f"{field}_{order}"
+            ch = await get_all_channels(cat_id)
+            kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_key)
+            await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+            await cb.answer()
+        finally:
+            if cb.from_user.id in user_carts:
+                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
     @dp.callback_query(F.data.startswith("channel_view_"))
     async def view_channel(cb: CallbackQuery):
-        cid = cb.data.replace("channel_view_", "")
-        ch = await get_all_channels()
-        info = ch.get(cid)
-        if not info:
-            await cb.answer("Канал не найден", True)
+        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_nav_lock'):
             return
-        txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
-        await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
-        await cb.answer()
+        if cb.from_user.id not in user_carts:
+            user_carts[cb.from_user.id] = []
+        user_carts[cb.from_user.id].append({"_nav_lock": True})
+        try:
+            cid = cb.data.replace("channel_view_", "")
+            ch = await get_all_channels()
+            info = ch.get(cid)
+            if not info:
+                await cb.answer("Канал не найден", True)
+                return
+            txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
+            await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
+            await cb.answer()
+        finally:
+            if cb.from_user.id in user_carts:
+                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_nav_lock' not in x]
 
-    @dp.callback_query(F.data.startswith("cart_add_"))
+        @dp.callback_query(F.data.startswith("cart_add_"))
     async def add_to_cart(cb: CallbackQuery):
-        cid = cb.data.replace("cart_add_", "")
-        ch = await get_all_channels()
-        info = ch.get(cid)
-        if not info:
-            await cb.answer("Канал не найден", True)
+        # Защита от двойного тыка
+        if cb.from_user.id in user_carts and user_carts[cb.from_user.id] and user_carts[cb.from_user.id][-1].get('_adding'):
             return
-        cart = get_cart(cb.from_user.id)
-        cart.append({"id": cid, "name": info['name'], "price": info['price']})
-        save_cart(cb.from_user.id, cart)
-        await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
+        # Ставим флаг
+        if cb.from_user.id not in user_carts:
+            user_carts[cb.from_user.id] = []
+        user_carts[cb.from_user.id].append({"_adding": True})  # временная метка
+        try:
+            cid = cb.data.replace("cart_add_", "")
+            ch = await get_all_channels()
+            info = ch.get(cid)
+            if not info:
+                await cb.answer("Канал не найден", True)
+                return
+            cart = get_cart(cb.from_user.id)
+            # Убираем временную метку
+            cart = [x for x in cart if not isinstance(x, dict) or '_adding' not in x]
+            cart.append({"id": cid, "name": info['name'], "price": info['price']})
+            save_cart(cb.from_user.id, cart)
+            await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
+        finally:
+            # Очистка флага в любом случае
+            if cb.from_user.id in user_carts:
+                user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_adding' not in x]
 
     # ========== Корзина (с подтверждением удаления) ==========
     @dp.message(F.text == "🛒 Корзина")
