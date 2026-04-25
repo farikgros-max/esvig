@@ -31,7 +31,7 @@ async def admin_panel_msg(m: Message):
     else:
         await m.answer("Нет прав")
 
-# ---------- Кнопка «Назад» и отмена ----------
+# ---------- Отмена и возврат ----------
 @router.callback_query(F.data == "cancel_add_channel")
 async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
@@ -100,7 +100,7 @@ async def admin_del_category(cb: CallbackQuery):
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов (оптимизированный) ----------
+# ---------- Список каналов ----------
 @router.callback_query(F.data == "admin_list")
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -112,13 +112,23 @@ async def adm_list(cb: CallbackQuery):
     await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
     await cb.answer()
 
+# ---------- Просмотр канала (с устойчивостью к неполной загрузке) ----------
 @router.callback_query(F.data.startswith("admin_view_"))
 async def adm_view_chan(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ch = await get_all_channels()
     cid = cb.data.replace("admin_view_", "")
-    info = ch.get(cid)
-    if not info: await cb.answer("Канал не найден", True); return
+    info = None
+    # Даём до 3 быстрых попыток получить данные канала
+    for _ in range(3):
+        ch = await get_all_channels()
+        info = ch.get(cid)
+        if info:
+            break
+        await asyncio.sleep(0.3)
+    if not info:
+        await cb.answer("Канал не найден", True)
+        return
+
     cat_name = ""
     if info.get('category_id'):
         cat = await get_category_by_id(info['category_id'])
@@ -131,6 +141,7 @@ async def adm_view_chan(cb: CallbackQuery):
     await cb.message.edit_text(txt, reply_markup=kb)
     await cb.answer()
 
+# ---------- Редактирование канала ----------
 @router.callback_query(F.data.startswith("edit_channel_"))
 async def edit_chan_menu(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -245,7 +256,7 @@ async def adm_del(cb: CallbackQuery):
     else:
         await cb.answer("Канал не найден", True)
 
-# ---------- Добавление канала (стандартное) ----------
+# ---------- Добавление канала ----------
 @router.callback_query(F.data == "admin_add")
 async def adm_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
@@ -311,37 +322,6 @@ async def a_desc(m: Message, state: FSMContext):
     cat_name = cat['display_name'] if cat else ""
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
     await state.clear()
-
-# ========== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ ==========
-# ---------- Просмотр логов ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
-async def show_logs(m: Message):
-    try:
-        if not os.path.exists('bot_errors.log'):
-            await m.answer("Файл логов не найден.")
-            return
-        with open('bot_errors.log', 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        last_lines = lines[-20:] if len(lines) >= 20 else lines
-        if not last_lines:
-            await m.answer("Логи пусты.")
-            return
-        text = "📄 Последние записи в логах:\n" + "".join(last_lines)
-        if len(text) > 4000:
-            text = text[-4000:]
-        await m.answer(text)
-    except Exception as e:
-        await m.answer(f"Ошибка при чтении логов: {e}")
-
-# ---------- КОМАНДА /count_channels (диагностика) ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/count_channels")
-async def count_channels_cmd(m: Message):
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-    try:
-        total = await conn.fetchval("SELECT COUNT(*) FROM channels")
-    finally:
-        await conn.close()
-    await m.answer(f"📊 Всего каналов в БД: {total}")
 
 # ---------- Быстрое добавление канала ----------
 @router.callback_query(F.data == "quick_add")
