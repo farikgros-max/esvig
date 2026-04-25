@@ -187,6 +187,7 @@ async def get_user_daily_info(user_id: int):
 
 # ---------- Категории ----------
 async def get_all_categories():
+    # Категории всегда загружаются надёжно, оставляем как есть
     conn = await asyncpg.connect(DATABASE_URL)
     try:
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -211,32 +212,35 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (гарантированно полная загрузка) ----------
+# ---------- Каналы (ИСПРАВЛЕНО: используется только пул) ----------
 async def get_all_channels(category_id=None):
-    # Сначала получаем точное количество через COUNT
     async with pool.acquire() as conn:
+        # Определяем запрос и параметры
         if category_id is not None:
-            total = await conn.fetchval('SELECT COUNT(*) FROM channels WHERE category_id = $1', category_id)
-            query = 'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1'
-            args = (category_id,)
+            count_query = 'SELECT COUNT(*) FROM channels WHERE category_id = $1'
+            data_query = 'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1'
+            params = (category_id,)
         else:
-            total = await conn.fetchval('SELECT COUNT(*) FROM channels')
-            query = 'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
-            args = ()
+            count_query = 'SELECT COUNT(*) FROM channels'
+            data_query = 'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
+            params = ()
 
-    # Пытаемся загрузить строки, пока количество не совпадёт с total (до 3 попыток)
+        # Получаем точное количество
+        total = await conn.fetchval(count_query, *params)
+
+    # Если каналов нет — сразу возвращаем пустой словарь
+    if total == 0:
+        return {}
+
+    # Пытаемся загрузить все строки через пул (до 3 попыток)
     for attempt in range(3):
-        # Открываем отдельное соединение, чтобы гарантированно получить все данные
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            rows = await conn.fetch(query, *args)
-        finally:
-            await conn.close()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(data_query, *params)
         if len(rows) == total:
             break
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.2 * (attempt + 1))
     else:
-        # Если после всех попыток не совпало, берём последний результат (он не может быть больше total)
+        # Если после всех попыток не совпало, берём последний результат
         pass
 
     ch = {}
