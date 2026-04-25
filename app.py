@@ -56,15 +56,13 @@ else:
     # fallback только для локальной разработки
     ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 
-XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")  # если нет — XRocket отключится
-CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
-XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "56ddd1419e9215489721f9a8")
+XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")
 DAILY_ORDER_LIMIT = 3
 # -------------------------------------------------------------------------
 
@@ -396,7 +394,6 @@ async def register_handlers(dp: Dispatcher):
             )
             await cb.answer()
 
-        # Оформление заказа (без изменений, только отступы проверены)
         @dp.callback_query(F.data == "checkout")
         async def checkout_cb(cb: CallbackQuery, state: FSMContext):
             cart = get_cart(cb.from_user.id)
