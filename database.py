@@ -8,11 +8,7 @@ pool = None
 
 # ---------- Улучшенная повторная попытка с логированием ----------
 async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=4, delay=0.8):
-    """
-    Выполняет SELECT-запрос до max_retries раз.
-    При ошибке соединения пересоздаёт пул.
-    Возвращает лучший результат (самый длинный список для fetch_all).
-    """
+    global pool   # ← ОБЯЗАТЕЛЬНО, чтобы использовать внешнюю переменную pool
     best_result = [] if fetch_all else None
     for attempt in range(max_retries):
         try:
@@ -98,11 +94,9 @@ async def init_db():
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
 
-        # Создаём категории при первом запуске, если их нет
         await _ensure_default_categories(conn)
 
 async def _ensure_default_categories(conn):
-    """Проверяет и создаёт категории по умолчанию, если таблица пуста."""
     exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
     if exists == 0:
         default_cats = [
@@ -222,11 +216,11 @@ async def get_user_daily_info(user_id: int):
             used = row['daily_orders_count']
         return row['daily_limit'], used
 
-# ---------- Категории (с автоматическим восстановлением) ----------
+# ---------- Категории ----------
 async def get_all_categories():
+    global pool
     rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
     if not rows:
-        # Категорий нет – создаём стандартные и пробуем снова
         async with pool.acquire() as conn:
             await _ensure_default_categories(conn)
         rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
