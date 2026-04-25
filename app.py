@@ -33,7 +33,7 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production.up.railway
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
-XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")
+XROCKET_API_KEY = "56ddd1419e9215489721f9a8"
 DAILY_ORDER_LIMIT = 3
 # ----------------------------------
 
