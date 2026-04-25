@@ -6,6 +6,12 @@ import hmac
 import time
 import asyncpg
 import requests
+import logging
+logging.basicConfig(
+    filename='bot_errors.log',
+    level=logging.ERROR,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -23,8 +29,19 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       check_daily_order_limit, get_user_daily_info)
 
 # ---------- Конфигурация (все секреты через переменные окружения) ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU")
-ADMIN_IDS = list(map(int, os.environ.get("ADMIN_IDS", "7787223469,7345960167,714447317,8614748084,8702300149,8472548724").split(",")))
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не задан в переменных окружения!")
+
+ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
+if ADMIN_IDS_STR:
+    ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
+else:
+    # fallback только для локальной разработки
+    ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
+
+XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")  # если нет — XRocket отключится
+CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
@@ -1180,13 +1197,13 @@ from aiohttp import web
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
-# Инициализация БД и хендлеров
+# ---------- Инициализация БД и хендлеров ----------
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Удаляем вебхук и сбрасываем все старые обновления
+    # Удаляем вебхук Telegram, т.к. используется Long Polling
     await bot_instance.delete_webhook(drop_pending_updates=True)
-    # Дополнительно "съедаем" оставшиеся обновления (чтобы offset точно обнулился)
+    # Очистка очереди обновлений (чтобы не было дублей)
     try:
         updates = await bot_instance.get_updates(offset=-1, limit=100, timeout=1)
         if updates:
@@ -1195,7 +1212,8 @@ async def startup():
     except Exception:
         pass
     print("Бот готов (Long Polling)")
-# Асинхронная обработка платёжных вебхуков
+
+# ---------- Обработчик платёжных уведомлений CryptoBot ----------
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
@@ -1203,7 +1221,7 @@ async def cryptobot_handler(request):
     secret = hashlib.sha256(CRYPTO_BOT_TOKEN.encode()).digest()
     signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
     if request.headers.get('Crypto-Pay-Api-Signature') != signature:
-        return web.json_response({'status': 'error'}, status=403)
+        return web.json_response({'status': 'unauthorized'}, status=401)
     try:
         data = await request.json()
         if data.get('update_type') == 'invoice_paid':
@@ -1213,26 +1231,25 @@ async def cryptobot_handler(request):
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
             if user_id:
                 amount = int(float(invoice['amount']))
-                await update_user_balance(user_id, amount, f"Пополнение USDT {amount}$")
+                await update_user_balance(user_id, amount, f"Пополнение CryptoBot {amount}$")
                 try:
                     await bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!")
                 except: pass
                 for aid in ADMIN_IDS:
                     try:
-                        await bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$")
+                        await bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$ через CryptoBot")
                     except: pass
     except Exception as e:
         print(f"CryptoBot webhook error: {e}")
     return web.json_response({'status': 'ok'})
 
+# ---------- Обработчик платёжных уведомлений XRocket ----------
 async def xrocket_handler(request):
     if not XROCKET_API_KEY:
         return web.json_response({'status': 'error'}, status=403)
-    body = await request.read()
-    secret = hashlib.sha256(XROCKET_API_KEY.encode()).digest()
-    signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
-    if request.headers.get('X-Signature') != signature:
-        return web.json_response({'status': 'error'}, status=403)
+    # Новый XRocket Pay API проверяет ключ в заголовке X-API-Key
+    if request.headers.get('X-API-Key') != XROCKET_API_KEY:
+        return web.json_response({'status': 'unauthorized'}, status=401)
     try:
         data = await request.json()
         if data.get('status') == 'paid':
@@ -1241,32 +1258,34 @@ async def xrocket_handler(request):
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
             if user_id:
                 amount = int(float(invoice.get('amount', 0)))
-                await update_user_balance(user_id, amount, f"Пополнение USDT {amount}$")
+                await update_user_balance(user_id, amount, f"Пополнение XRocket {amount}$")
                 try:
                     await bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!")
                 except: pass
                 for aid in ADMIN_IDS:
                     try:
-                        await bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$")
+                        await bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$ через XRocket")
                     except: pass
     except Exception as e:
         print(f"XRocket webhook error: {e}")
     return web.json_response({'status': 'ok'})
 
+# ---------- Главная функция запуска ----------
 async def main():
     await startup()
-    # Создаём aiohttp-приложение с платёжными эндпоинтами
+    # Создаём aiohttp-приложение и регистрируем эндпоинты
     aio_app = web.Application()
     aio_app.router.add_post('/cryptobot', cryptobot_handler)
     aio_app.router.add_post('/xrocket', xrocket_handler)
-    # Запускаем HTTP-сервер на порту из переменной окружения
+    # Запускаем HTTP-сервер на порту Railway (переменная PORT)
     runner = web.AppRunner(aio_app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
     await site.start()
     print(f"Платёжный HTTP-сервер запущен на порту {os.environ.get('PORT', 8080)}")
-    # Запускаем поллинг Telegram
+    # Запускаем бесконечный опрос Telegram (Long Polling)
     await dp_instance.start_polling(bot_instance, skip_updates=True)
 
+# ---------- Точка входа ----------
 if __name__ == "__main__":
     asyncio.run(main())
