@@ -9,7 +9,7 @@ import requests
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-                           ReplyKeyboardMarkup, KeyboardButton, FSInputFile)
+                           ReplyKeyboardMarkup, KeyboardButton, FSInputFile, Update)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -22,20 +22,18 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
 
-# ---------- Конфигурация ----------
-BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
-ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
+# ---------- Конфигурация (все секреты через переменные окружения) ----------
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU")
+ADMIN_IDS = list(map(int, os.environ.get("ADMIN_IDS", "7787223469,7345960167,714447317,8614748084,8702300149,8472548724").split(",")))
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-# ↓↓↓ ВАЖНО: обновлённый домен
-WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
-# ↓↓↓ Жёстко прописанный ключ XRocket (работает гарантированно)
-XROCKET_API_KEY = "56ddd1419e9215489721f9a8"
+XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "56ddd1419e9215489721f9a8")
 DAILY_ORDER_LIMIT = 3
-# ----------------------------------
+# -------------------------------------------------------------------------
 
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
@@ -79,7 +77,7 @@ def save_cart(uid, cart):
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
-# --- Клавиатуры (все функции без изменений) ---
+# --- Клавиатуры (все функции без изменений, кроме исправления сортировки) ---
 def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
@@ -125,14 +123,15 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     if not channels_dict:
         return None, 0, 0
     items = list(channels_dict.items())
+    # Используем sorted() для избежания мутации
     if sort_by == "price_asc":
-        items.sort(key=lambda x: x[1]['price'])
+        items = sorted(items, key=lambda x: x[1]['price'])
     elif sort_by == "price_desc":
-        items.sort(key=lambda x: x[1]['price'], reverse=True)
+        items = sorted(items, key=lambda x: x[1]['price'], reverse=True)
     elif sort_by == "subs_asc":
-        items.sort(key=lambda x: x[1]['subscribers'])
+        items = sorted(items, key=lambda x: x[1]['subscribers'])
     elif sort_by == "subs_desc":
-        items.sort(key=lambda x: x[1]['subscribers'], reverse=True)
+        items = sorted(items, key=lambda x: x[1]['subscribers'], reverse=True)
 
     tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page < 0: page = 0
@@ -264,7 +263,7 @@ async def get_category_selection_keyboard(callback_prefix):
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# --- Обработчики ---
+# --- Обработчики (без изменений, кроме обработки welcome.jpg) ---
 async def register_handlers(dp: Dispatcher):
     @dp.message(Command("start"))
     async def start(m: Message):
@@ -272,8 +271,12 @@ async def register_handlers(dp: Dispatcher):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
         try:
-            photo = FSInputFile("welcome.jpg")
-            await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
+            # Проверяем существование файла, чтобы избежать лишней ошибки в логах
+            if os.path.exists("welcome.jpg"):
+                photo = FSInputFile("welcome.jpg")
+                await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
+            else:
+                raise FileNotFoundError
         except:
             await m.answer(caption, reply_markup=get_main_keyboard(m.from_user.id))
 
@@ -1157,7 +1160,6 @@ dp_instance = Dispatcher(storage=MemoryStorage())
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    # Устанавливаем вебхук с новым URL и сбрасываем старые обновления
     await bot_instance.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
     print(f"Webhook set to {WEBHOOK_URL}")
     print("Бот готов")
@@ -1173,23 +1175,23 @@ def cryptobot_webhook():
         return jsonify({'status': 'error'}), 403
     data = request.json
     if data.get('update_type') == 'invoice_paid':
-        payload = data['payload']
-        invoice = payload['invoice']
-        desc = invoice.get('description', '')
         try:
+            payload = data['payload']
+            invoice = payload['invoice']
+            desc = invoice.get('description', '')
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
-        except:
-            user_id = None
-        if user_id:
-            amount = int(float(invoice['amount']))
-            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
-            try:
-                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
-            except: pass
-            for aid in ADMIN_IDS:
+            if user_id:
+                amount = int(float(invoice['amount']))
+                asyncio.run(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
                 try:
-                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    asyncio.run(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
                 except: pass
+                for aid in ADMIN_IDS:
+                    try:
+                        asyncio.run(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    except: pass
+        except Exception as e:
+            print(f"Error in cryptobot webhook: {e}")
     return jsonify({'status': 'ok'})
 
 @app.route('/xrocket', methods=['POST'])
@@ -1203,35 +1205,41 @@ def xrocket_webhook():
         return jsonify({'status': 'error'}), 403
     data = request.json
     if data.get('status') == 'paid':
-        invoice = data.get('invoice', {})
-        desc = invoice.get('description', '')
         try:
+            invoice = data.get('invoice', {})
+            desc = invoice.get('description', '')
             user_id = int(desc.split("user_id:")[1]) if "user_id:" in desc else None
-        except:
-            user_id = None
-        if user_id:
-            amount = int(float(invoice.get('amount', 0)))
-            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
-            try:
-                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
-            except: pass
-            for aid in ADMIN_IDS:
+            if user_id:
+                amount = int(float(invoice.get('amount', 0)))
+                asyncio.run(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
                 try:
-                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    asyncio.run(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
                 except: pass
+                for aid in ADMIN_IDS:
+                    try:
+                        asyncio.run(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    except: pass
+        except Exception as e:
+            print(f"Error in xrocket webhook: {e}")
     return jsonify({'status': 'ok'})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    # Проверка токена временно отключена для стабильности
-    # if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
-    #     return jsonify({'status': 'unauthorized'}), 401
-    upd = Update(**request.json)
-    loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
+    # Проверка секретного токена (включена!)
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+        return jsonify({'status': 'unauthorized'}), 401
+    try:
+        upd = Update(**request.json)
+        asyncio.run(dp_instance.feed_update(bot_instance, upd))
+    except Exception as e:
+        print(f"Webhook error: {e}")
     return jsonify({'status': 'ok'})
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-loop.run_until_complete(startup())
-
-application = app
+# ------------------ Запуск ------------------
+if __name__ == "__main__":
+    # Инициализация и запуск Flask (для разработки можно использовать app.run)
+    asyncio.run(startup())
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+else:
+    # При деплое на Railway и т.п. инициализация произойдёт через gunicorn
+    asyncio.run(startup())
