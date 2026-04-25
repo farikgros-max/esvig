@@ -304,7 +304,6 @@ async def register_handlers(dp: Dispatcher):
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
         caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
         try:
-            # Проверяем существование файла, чтобы избежать лишней ошибки в логах
             if os.path.exists("welcome.jpg"):
                 photo = FSInputFile("welcome.jpg")
                 await m.answer_photo(photo, caption=caption, reply_markup=get_main_keyboard(m.from_user.id))
@@ -320,148 +319,419 @@ async def register_handlers(dp: Dispatcher):
         else:
             await m.answer("Нет прав")
 
-            # ========== Корзина ==========
-        @dp.message(F.text == "🛒 Корзина")
-        async def cart(m: Message):
-            c = get_cart(m.from_user.id)
-            if not c:
-                await m.answer("Корзина пуста")
-                return
-            total = sum(i['price'] for i in c)
-            items_str = "\n".join(f"{idx+1}. {i['name']} — {i['price']}$" for idx,i in enumerate(c))
-            await m.answer(f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$", reply_markup=get_cart_keyboard(m.from_user.id))
+    # ========== Каталог ==========
+    @dp.message(F.text == "📋 Каталог каналов")
+    async def catalog_start(m: Message):
+        cats = await get_all_categories()
+        if not cats:
+            await m.answer("Категории не найдены")
+            return
+        await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard())
 
-        @dp.callback_query(F.data == "clear_cart")
-        async def clear_cart(cb: CallbackQuery):
-            user_carts[cb.from_user.id] = []
-            await cb.answer("🗑 Корзина очищена", False)
+    @dp.callback_query(F.data.startswith("category_select_"))
+    async def select_category(cb: CallbackQuery):
+        cat_id = int(cb.data.split("_")[2])
+        ch = await get_all_channels(cat_id)
+        if not ch:
+            await cb.message.edit_text("В этой категории пока нет каналов.",
+                                       reply_markup=InlineKeyboardMarkup(
+                                           inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
+            await cb.answer()
+            return
+        kb, page, total = get_catalog_keyboard(ch, cat_id, 0)
+        await cb.message.edit_text(f"📢 Каналы в категории (страница 1/{total})", reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("sort_"))
+    async def sort_catalog(cb: CallbackQuery):
+        parts = cb.data.split("_")
+        cat_id = int(parts[1])
+        field = parts[2]
+        order = parts[3]
+        page = int(parts[4])
+        sort_key = f"{field}_{order}"
+        ch = await get_all_channels(cat_id)
+        kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_key)
+        await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data == "back_to_categories")
+    async def back_to_categories(cb: CallbackQuery):
+        cats = await get_all_categories()
+        if not cats:
+            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("view_catalog_page_"))
+    async def view_catalog_page(cb: CallbackQuery):
+        parts = cb.data.split("_")
+        cat_id = int(parts[3])
+        page = int(parts[4])
+        sort_by = parts[5] if len(parts) > 5 else "default"
+        ch = await get_all_channels(cat_id)
+        kb, cur, total = get_catalog_keyboard(ch, cat_id, page, sort_by=sort_by)
+        if kb:
+            await cb.message.edit_text(f"📢 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+        else:
+            await cb.message.edit_text("Каталог пуст", reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")]]))
+        await cb.answer()
+
+    @dp.callback_query(F.data == "back_to_catalog")
+    async def back_to_catalog(cb: CallbackQuery):
+        cats = await get_all_categories()
+        if not cats:
+            await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
+            await cb.answer()
+            return
+        await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard())
+        await cb.answer()
+
+    @dp.callback_query(F.data == "back_to_main_menu")
+    async def back_main_menu(cb: CallbackQuery):
+        await cb.message.delete()
+        await cb.message.answer("Главное меню:", reply_markup=get_main_keyboard(cb.from_user.id))
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("channel_view_"))
+    async def view_channel(cb: CallbackQuery):
+        cid = cb.data.replace("channel_view_", "")
+        ch = await get_all_channels()
+        info = ch.get(cid)
+        if not info:
+            await cb.answer("Канал не найден", True)
+            return
+        txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
+        await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("cart_add_"))
+    async def add_to_cart(cb: CallbackQuery):
+        cid = cb.data.replace("cart_add_", "")
+        ch = await get_all_channels()
+        info = ch.get(cid)
+        if not info:
+            await cb.answer("Канал не найден", True)
+            return
+        cart = get_cart(cb.from_user.id)
+        cart.append({"id": cid, "name": info['name'], "price": info['price']})
+        save_cart(cb.from_user.id, cart)
+        await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
+
+    # ========== Корзина (с подтверждением удаления) ==========
+    @dp.message(F.text == "🛒 Корзина")
+    async def cart(m: Message):
+        c = get_cart(m.from_user.id)
+        if not c:
+            await m.answer("Корзина пуста")
+            return
+        total = sum(i['price'] for i in c)
+        items_str = "\n".join(f"{idx+1}. {i['name']} — {i['price']}$" for idx,i in enumerate(c))
+        await m.answer(f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$", reply_markup=get_cart_keyboard(m.from_user.id))
+
+    @dp.callback_query(F.data == "clear_cart")
+    async def clear_cart(cb: CallbackQuery):
+        user_carts[cb.from_user.id] = []
+        await cb.answer("🗑 Корзина очищена", False)
+        await cb.message.delete()
+        await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+
+    @dp.callback_query(F.data.startswith("remove_"))
+    async def ask_remove_item(cb: CallbackQuery):
+        idx = int(cb.data.split("_")[1])
+        cart = get_cart(cb.from_user.id)
+        if 0 <= idx < len(cart):
+            item = cart[idx]
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_remove_{idx}")],
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="cart_cancel")]
+            ])
+            await cb.message.edit_text(
+                f"Удалить «{item['name']}» из корзины?",
+                reply_markup=kb
+            )
+        else:
+            await cb.answer("Товар не найден", show_alert=True)
+        await cb.answer()
+
+    @dp.callback_query(F.data.startswith("confirm_remove_"))
+    async def confirm_remove(cb: CallbackQuery):
+        idx = int(cb.data.split("_")[2])
+        cart = get_cart(cb.from_user.id)
+        if 0 <= idx < len(cart):
+            removed = cart.pop(idx)
+            save_cart(cb.from_user.id, cart)
+            await cb.answer(f"❌ {removed['name']} удалён", show_alert=False)
+        else:
+            await cb.answer("Ошибка: товар уже не существует", show_alert=True)
+        if not cart:
             await cb.message.delete()
             await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
-
-        @dp.callback_query(F.data.startswith("remove_"))
-        async def ask_remove_item(cb: CallbackQuery):
-            idx = int(cb.data.split("_")[1])
-            cart = get_cart(cb.from_user.id)
-            if 0 <= idx < len(cart):
-                item = cart[idx]
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_remove_{idx}")],
-                    [InlineKeyboardButton(text="❌ Отмена", callback_data="cart_cancel")]
-                ])
-                await cb.message.edit_text(
-                    f"Удалить «{item['name']}» из корзины?",
-                    reply_markup=kb
-                )
-            else:
-                await cb.answer("Товар не найден", show_alert=True)
-            await cb.answer()
-
-        @dp.callback_query(F.data.startswith("confirm_remove_"))
-        async def confirm_remove(cb: CallbackQuery):
-            idx = int(cb.data.split("_")[2])
-            cart = get_cart(cb.from_user.id)
-            if 0 <= idx < len(cart):
-                removed = cart.pop(idx)
-                save_cart(cb.from_user.id, cart)
-                await cb.answer(f"❌ {removed['name']} удалён", show_alert=False)
-            else:
-                await cb.answer("Ошибка: товар уже не существует", show_alert=True)
-            if not cart:
-                await cb.message.delete()
-                await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
-            else:
-                total = sum(i['price'] for i in cart)
-                items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
-                await cb.message.edit_text(
-                    f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
-                    reply_markup=get_cart_keyboard(cb.from_user.id)
-                )
-            await cb.answer()
-
-        @dp.callback_query(F.data == "cart_cancel")
-        async def cart_cancel(cb: CallbackQuery):
-            cart = get_cart(cb.from_user.id)
-            if not cart:
-                await cb.message.delete()
-                await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
-                await cb.answer()
-                return
+        else:
             total = sum(i['price'] for i in cart)
             items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
             await cb.message.edit_text(
                 f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
                 reply_markup=get_cart_keyboard(cb.from_user.id)
             )
+        await cb.answer()
+
+    @dp.callback_query(F.data == "cart_cancel")
+    async def cart_cancel(cb: CallbackQuery):
+        cart = get_cart(cb.from_user.id)
+        if not cart:
+            await cb.message.delete()
+            await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
+            return
+        total = sum(i['price'] for i in cart)
+        items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
+        await cb.message.edit_text(
+            f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
+            reply_markup=get_cart_keyboard(cb.from_user.id)
+        )
+        await cb.answer()
 
-        @dp.callback_query(F.data == "checkout")
-        async def checkout_cb(cb: CallbackQuery, state: FSMContext):
-            cart = get_cart(cb.from_user.id)
-            if not cart:
-                await cb.message.edit_text("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
-                await cb.answer()
-                return
-            total = sum(i['price'] for i in cart)
-            await state.update_data(cart=cart, total=total)
-            await cb.message.edit_text(f"💳 Оформление заказа\n\nСумма: {total}$\nВведите ваш бюджет (цифрами, ≥ суммы):")
-            await state.set_state(OrderForm.waiting_for_budget)
+    @dp.callback_query(F.data == "checkout")
+    async def checkout_cb(cb: CallbackQuery, state: FSMContext):
+        cart = get_cart(cb.from_user.id)
+        if not cart:
+            await cb.message.edit_text("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
+            return
+        total = sum(i['price'] for i in cart)
+        await state.update_data(cart=cart, total=total)
+        await cb.message.edit_text(f"💳 Оформление заказа\n\nСумма: {total}$\nВведите ваш бюджет (цифрами, ≥ суммы):")
+        await state.set_state(OrderForm.waiting_for_budget)
+        await cb.answer()
 
-        @dp.message(OrderForm.waiting_for_budget)
-        async def budg(m: Message, state: FSMContext):
-            if not m.text.isdigit():
-                await m.answer("Введите число")
-                return
-            budget = int(m.text)
-            d = await state.get_data()
-            total = d.get("total",0)
-            if budget < total:
-                await m.answer(f"Бюджет ({budget}$) меньше суммы ({total}$). Введите {total}$ или больше:")
-                return
-            await state.update_data(budget=budget)
-            await m.answer("Напишите ваш Telegram username (например, @username) или другой контакт:")
-            await state.set_state(OrderForm.waiting_for_contact)
+    @dp.message(OrderForm.waiting_for_budget)
+    async def budg(m: Message, state: FSMContext):
+        if not m.text.isdigit():
+            await m.answer("Введите число")
+            return
+        budget = int(m.text)
+        d = await state.get_data()
+        total = d.get("total",0)
+        if budget < total:
+            await m.answer(f"Бюджет ({budget}$) меньше суммы ({total}$). Введите {total}$ или больше:")
+            return
+        await state.update_data(budget=budget)
+        await m.answer("Напишите ваш Telegram username (например, @username) или другой контакт:")
+        await state.set_state(OrderForm.waiting_for_contact)
 
-        @dp.message(OrderForm.waiting_for_contact)
-        async def cont(m: Message, state: FSMContext):
-            d = await state.get_data()
-            cart = d.get("cart",[])
-            total = d.get("total",0)
-            budget = d.get("budget",0)
-            contact = m.text.strip()
-            username = m.from_user.username or "не указан"
+    @dp.message(OrderForm.waiting_for_contact)
+    async def cont(m: Message, state: FSMContext):
+        d = await state.get_data()
+        cart = d.get("cart",[])
+        total = d.get("total",0)
+        budget = d.get("budget",0)
+        contact = m.text.strip()
+        username = m.from_user.username or "не указан"
 
-            can_order = await check_daily_order_limit(m.from_user.id)
-            if not can_order:
-                user_info = await get_or_create_user(m.from_user.id)
-                await m.answer(f"❌ Вы исчерпали дневной лимит заявок ({user_info['daily_limit']}). Попробуйте завтра.")
-                await state.clear()
-                return
-
-            balance = await get_user_balance(m.from_user.id)
-            if balance < total:
-                await m.answer(f"❌ Недостаточно средств. Ваш баланс: {balance}$, сумма заказа: {total}$.\nПополните баланс в разделе «👤 Мой профиль» → «💰 Пополнить баланс».")
-                await state.clear()
-                return
-
-            order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='оплачена')
-            success = await debit_balance(m.from_user.id, total, order_id, description=f"Оплата заказа #{order_id}")
-            if not success:
-                await update_order_status(order_id, 'отменена')
-                await m.answer("Не удалось списать средства. Заказ отменён. Обратитесь в поддержку.")
-                await state.clear()
-                return
-
-            items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
-            report = f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n👤 @{username}\n📦 Состав:\n{items}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
-            for aid in ADMIN_IDS:
-                try:
-                    await m.bot.send_message(aid, report)
-                except: pass
-            user_carts[m.from_user.id] = []
-            await m.answer(f"✅ Заказ #{order_id} оформлен и оплачен! Сумма {total}$ списана с баланса.\nМенеджер скоро свяжется с вами.",
-                           reply_markup=get_main_keyboard(m.from_user.id))
+        can_order = await check_daily_order_limit(m.from_user.id)
+        if not can_order:
+            user_info = await get_or_create_user(m.from_user.id)
+            await m.answer(f"❌ Вы исчерпали дневной лимит заявок ({user_info['daily_limit']}). Попробуйте завтра.")
             await state.clear()
+            return
+
+        balance = await get_user_balance(m.from_user.id)
+        if balance < total:
+            await m.answer(f"❌ Недостаточно средств. Ваш баланс: {balance}$, сумма заказа: {total}$.\nПополните баланс в разделе «👤 Мой профиль» → «💰 Пополнить баланс».")
+            await state.clear()
+            return
+
+        order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='оплачена')
+        success = await debit_balance(m.from_user.id, total, order_id, description=f"Оплата заказа #{order_id}")
+        if not success:
+            await update_order_status(order_id, 'отменена')
+            await m.answer("Не удалось списать средства. Заказ отменён. Обратитесь в поддержку.")
+            await state.clear()
+            return
+
+        items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
+        report = f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n👤 @{username}\n📦 Состав:\n{items}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
+        for aid in ADMIN_IDS:
+            try:
+                await m.bot.send_message(aid, report)
+            except: pass
+        user_carts[m.from_user.id] = []
+        await m.answer(f"✅ Заказ #{order_id} оформлен и оплачен! Сумма {total}$ списана с баланса.\nМенеджер скоро свяжется с вами.",
+                       reply_markup=get_main_keyboard(m.from_user.id))
+        await state.clear()
+
+    # ========== Профиль ==========
+    @dp.message(F.text == "👤 Мой профиль")
+    async def profile(m: Message):
+        try:
+            user = await get_or_create_user(m.from_user.id, m.from_user.username or "")
+            daily_limit, daily_used = 0, 0
+            try:
+                daily_limit, daily_used = await get_user_daily_info(m.from_user.id)
+            except Exception:
+                pass
+            left_orders = max(daily_limit - daily_used, 0) if daily_limit > 0 else "∞"
+
+            total_spent = 0
+            total_orders = 0
+            try:
+                completed_orders = await get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
+                total_spent = sum(o['total'] for o in completed_orders)
+                total_orders = len(completed_orders)
+            except Exception:
+                pass
+
+            txt = (
+                f"👤 Мой профиль\n\n"
+                f"🆔 ID: {m.from_user.id}\n"
+                f"📛 Username: @{m.from_user.username or 'не указан'}\n"
+                f"📦 Успешных заказов: {total_orders}\n"
+                f"💰 Общая сумма трат: {total_spent}$\n"
+                f"💳 Баланс: {user.get('balance', 0)}$\n"
+                f"📅 Осталось заявок сегодня: {left_orders}/{daily_limit if daily_limit > 0 else '∞'}"
+            )
+            await m.answer(txt, reply_markup=get_profile_keyboard())
+        except Exception as e:
+            await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
+
+    # ========== ПОПОЛНЕНИЕ БАЛАНСА ==========
+    @dp.callback_query(F.data == "deposit")
+    async def deposit_menu(cb: CallbackQuery):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💵 CryptoBot", callback_data="deposit_crypto")],
+            [InlineKeyboardButton(text="💎 XRocket", callback_data="deposit_xrocket")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
+        ])
+        await cb.message.edit_text("Выберите способ пополнения:", reply_markup=kb)
+        await cb.answer()
+
+    @dp.callback_query(F.data == "deposit_crypto")
+    async def deposit_crypto_start(cb: CallbackQuery, state: FSMContext):
+        await cb.message.edit_text(
+            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+            reply_markup=cancel_keyboard()
+        )
+        await state.set_state(OrderForm.waiting_for_deposit_amount)
+        await state.update_data(payment_method='crypto')
+        await cb.answer()
+
+    @dp.callback_query(F.data == "deposit_xrocket")
+    async def deposit_xrocket_start(cb: CallbackQuery, state: FSMContext):
+        await cb.message.edit_text(
+            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+            reply_markup=cancel_keyboard()
+        )
+        await state.set_state(OrderForm.waiting_for_deposit_amount)
+        await state.update_data(payment_method='xrocket')
+        await cb.answer()
+
+    @dp.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
+    async def cancel_deposit(cb: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await cb.message.edit_text("👤 Мой профиль", reply_markup=get_profile_keyboard())
+        await cb.answer()
+
+    @dp.message(OrderForm.waiting_for_deposit_amount)
+    async def process_deposit_amount(m: Message, state: FSMContext):
+        text = m.text.strip()
+        try:
+            amount = float(text)
+        except ValueError:
+            await m.answer("Пожалуйста, введите число (например, 0.5 или 10).")
+            return
+
+        if amount < MIN_DEPOSIT:
+            await m.answer(f"Минимальная сумма пополнения — {MIN_DEPOSIT} USDT. Попробуйте ещё раз.")
+            return
+
+        # Блокировка повторного входа
+        current_state = await state.get_state()
+        if current_state == OrderForm.processing_deposit:
+            return
+        await state.set_state(OrderForm.processing_deposit)
+
+        data = await state.get_data()
+        method = data.get('payment_method', 'crypto')
+
+        if method == 'crypto':
+            if not CRYPTO_BOT_TOKEN:
+                await m.answer("Платёжная система временно недоступна.")
+                await state.clear()
+                return
+            url = "https://pay.crypt.bot/api/createInvoice"
+            headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+            payload = {
+                "asset": "USDT",
+                "amount": str(amount),
+                "description": f"Пополнение баланса user_id:{m.from_user.id}",
+                "paid_btn_name": "callback",
+                "paid_btn_url": PAID_BTN_URL,
+                "hidden_message": f"Спасибо за пополнение, {m.from_user.first_name}!"
+            }
+        else:  # xrocket
+            if not XROCKET_API_KEY:
+                await m.answer("Платёжная система временно недоступна.")
+                await state.clear()
+                return
+            url = "https://pay.xrocket.tg/tg-invoices"
+            headers = {
+                "Rocket-Pay-Key": XROCKET_API_KEY,
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "amount": amount,
+                "currency": "USDT",
+                "description": f"Пополнение баланса user_id:{m.from_user.id}",
+                "numPayments": 1,
+                "expiredIn": 3600
+            }
+
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=10)
+            data_resp = r.json()
+            if method == 'crypto':
+                if data_resp.get("ok"):
+                    invoice_url = data_resp["result"]["pay_url"]
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                    ])
+                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+                else:
+                    await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
+            else:  # xrocket
+                if data_resp.get("success"):
+                    invoice_url = data_resp["data"]["link"]
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                    ])
+                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+                else:
+                    error_msg = data_resp.get("message", "Неизвестная ошибка")
+                    await m.answer(f"Ошибка при создании счёта: {error_msg}", reply_markup=get_profile_keyboard())
+        except requests.exceptions.ConnectionError:
+            await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
+        except Exception as e:
+            await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
+        finally:
+            await state.clear()
+
+    @dp.callback_query(F.data == "check_payment")
+    async def check_payment_handler(cb: CallbackQuery):
+        await cb.message.edit_text(
+            "ℹ️ Если вы только что оплатили счёт, баланс зачислится автоматически в течение минуты.\n"
+            "Если этого не произошло, напишите в поддержку: @esvig_support",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
+            ])
+        )
+        await cb.answer()
+
     # ========== Заявки пользователя ==========
     @dp.callback_query(F.data == "my_orders")
     async def my_ords(cb: CallbackQuery):
@@ -894,12 +1164,6 @@ async def register_handlers(dp: Dispatcher):
             return
         await cb.message.edit_text("Введите Telegram ID пользователя:", reply_markup=cancel_keyboard())
         await state.set_state(AdminBalanceStates.waiting_for_user_id)
-        await cb.answer()
-
-    @dp.callback_query(F.data == "cancel_add_channel", AdminBalanceStates.waiting_for_user_id)
-    async def cancel_balance_user(cb: CallbackQuery, state: FSMContext):
-        await state.clear()
-        await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
         await cb.answer()
 
     @dp.message(AdminBalanceStates.waiting_for_user_id)
