@@ -889,7 +889,6 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer("Канал не найден", True)
 
     # ========== ДОБАВЛЕНИЕ КАНАЛА ==========
-       # ========== ДОБАВЛЕНИЕ КАНАЛА (полный рабочий блок) ==========
     @dp.callback_query(F.data == "admin_add")
     async def adm_add_start(cb: CallbackQuery, state: FSMContext):
         if cb.from_user.id not in ADMIN_IDS:
@@ -956,7 +955,6 @@ async def register_handlers(dp: Dispatcher):
         cat_name = cat['display_name'] if cat else ""
         await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
         await state.clear()
-
     # ========== ЗАЯВКИ (админ) ==========
     @dp.callback_query(F.data == "admin_orders")
     async def adm_orders(cb: CallbackQuery):
