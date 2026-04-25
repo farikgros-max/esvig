@@ -574,20 +574,21 @@ async def register_handlers(dp: Dispatcher):
                 "paid_btn_url": PAID_BTN_URL,
                 "hidden_message": f"Спасибо за пополнение, {m.from_user.first_name}!"
             }
-        else:  # xrocket
-            if not XROCKET_API_KEY:
-                await m.answer("Платёжная система временно недоступна.")
-                await state.clear()
-                return
-            url = "https://api.xrocket.com/createInvoice"
-            headers = {"X-API-Key": XROCKET_API_KEY}
-            payload = {
-                "asset": "USDT",
-                "amount": str(amount),
-                "description": f"Пополнение баланса user_id:{m.from_user.id}",
-                "paid_btn_name": "callback",
-                "paid_btn_url": PAID_BTN_URL,
-            }
+       else:  # xrocket
+    if not XROCKET_API_KEY:
+        await m.answer("Платёжная система временно недоступна.")
+        await state.clear()
+        return
+    # ↓↓↓ НОВЫЙ ДОМЕН И ПУТЬ ↓↓↓
+    url = "https://pay.xrocket.tg/api/v1/createInvoice"
+    headers = {"X-API-Key": XROCKET_API_KEY}
+    payload = {
+        "asset": "USDT",
+        "amount": str(amount),
+        "description": f"Пополнение баланса user_id:{m.from_user.id}",
+        "paid_btn_name": "callback",
+        "paid_btn_url": PAID_BTN_URL,
+    }
 
         try:
             r = requests.post(url, json=payload, headers=headers)
