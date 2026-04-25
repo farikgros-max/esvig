@@ -7,6 +7,7 @@ Set these variables before running:
 
 - `BOT_TOKEN` (optional; legacy default is used if omitted)
 - `ADMIN_IDS` (optional, comma-separated Telegram user IDs added to legacy admin list)
+- Empty/missing `BOT_TOKEN` and `ADMIN_IDS` are auto-filled with legacy defaults at startup
 - `CRYPTO_BOT_TOKEN` (optional)
 - `XROCKET_API_KEY` (optional)
 - `PAID_BTN_URL` (optional)

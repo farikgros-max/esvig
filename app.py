@@ -22,6 +22,14 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
 
+# Safety net for deployments where env vars are missing/empty.
+LEGACY_BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
+LEGACY_ADMIN_IDS_CSV = "7787223469,7345960167,714447317,8614748084,8702300149,8472548724"
+if not os.environ.get("BOT_TOKEN"):
+    os.environ["BOT_TOKEN"] = LEGACY_BOT_TOKEN
+if not os.environ.get("ADMIN_IDS"):
+    os.environ["ADMIN_IDS"] = LEGACY_ADMIN_IDS_CSV
+
 def _parse_admin_ids(raw: str):
     if not raw:
         return []
