@@ -6,17 +6,20 @@ import asyncio
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
 
-# ---------- Улучшенная повторная попытка с логированием ----------
+# ---------- Быстрая и надёжная загрузка данных ----------
 async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=4, delay=0.8):
-    global pool   # ← ОБЯЗАТЕЛЬНО, чтобы использовать внешнюю переменную pool
-    best_result = [] if fetch_all else None
+    """
+    Выполняет SELECT-запрос. Если результат непустой - сразу возвращает.
+    При пустом результате пересоздаёт пул и пробует снова (до max_retries раз).
+    """
+    global pool
     for attempt in range(max_retries):
         try:
             async with pool.acquire() as conn:
                 if fetch_all:
                     rows = await conn.fetch(query, *args)
-                    if len(rows) > len(best_result):
-                        best_result = rows
+                    if rows:
+                        return rows
                 else:
                     row = await conn.fetchrow(query, *args)
                     if row is not None:
@@ -33,8 +36,8 @@ async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=4, delay=0
         except Exception as e:
             print(f"[DB] Неожиданная ошибка (попытка {attempt+1}): {e}")
         await asyncio.sleep(delay * (attempt + 1))
-    print(f"[DB] Итоговый размер best_result: {len(best_result)}")
-    return best_result if fetch_all else None
+    # Если все попытки провалились, возвращаем пустой результат
+    return [] if fetch_all else None
 
 # ---------- Инициализация БД ----------
 async def init_db():
@@ -218,9 +221,9 @@ async def get_user_daily_info(user_id: int):
 
 # ---------- Категории ----------
 async def get_all_categories():
-    global pool
     rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
     if not rows:
+        # Если категорий нет, создаём стандартные и пробуем снова
         async with pool.acquire() as conn:
             await _ensure_default_categories(conn)
         rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
@@ -240,7 +243,7 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы ----------
+# ---------- Каналы (теперь работает мгновенно) ----------
 async def get_all_channels(category_id=None):
     if category_id is not None:
         rows = await _retry_fetch_best(
@@ -251,7 +254,6 @@ async def get_all_channels(category_id=None):
         rows = await _retry_fetch_best(
             'SELECT id, name, price, subscribers, url, description, category_id FROM channels', fetch_all=True
         )
-    print(f"[DEBUG] get_all_channels вернула {len(rows)} записей")
     ch = {}
     for r in rows:
         ch[r['id']] = {
