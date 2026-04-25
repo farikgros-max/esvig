@@ -1158,6 +1158,8 @@ bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 _polling_started = False
 _polling_lock = threading.Lock()
+_polling_loop = None
+_polling_loop_ready = threading.Event()
 
 async def startup():
     await init_db()
@@ -1167,7 +1169,14 @@ async def startup():
     await dp_instance.start_polling(bot_instance)
 
 def run_async(coro):
-    """Запуск async-кода из Flask webhook-хендлеров (sync-контекст)."""
+    """
+    Запуск async-кода из Flask webhook-хендлеров (sync-контекст).
+    Если polling уже запущен в фоне — отправляем корутину в его event loop.
+    Иначе используем asyncio.run как fallback.
+    """
+    if _polling_loop and _polling_loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(coro, _polling_loop)
+        return future.result(timeout=30)
     return asyncio.run(coro)
 
 def start_polling_in_background():
@@ -1175,17 +1184,24 @@ def start_polling_in_background():
     Запускает polling в отдельном потоке для WSGI/gunicorn режима.
     Важно: при workers > 1 или нескольких репликах нужен только один инстанс polling.
     """
-    global _polling_started
+    global _polling_started, _polling_loop
     with _polling_lock:
         if _polling_started:
             return
         _polling_started = True
 
     def _runner():
-        asyncio.run(startup())
+        global _polling_loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _polling_loop = loop
+        _polling_loop_ready.set()
+        loop.create_task(startup())
+        loop.run_forever()
 
     t = threading.Thread(target=_runner, name="telegram-polling", daemon=True)
     t.start()
+    _polling_loop_ready.wait(timeout=10)
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
