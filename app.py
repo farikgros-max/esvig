@@ -364,7 +364,6 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data.startswith("channel_view_"))
     async def view_channel(cb: CallbackQuery):
         cid = cb.data.replace("channel_view_", "")
-        # Загружаем конкретный канал – для этого добавим функцию get_channel_by_id
         ch = await get_all_channels()
         info = ch.get(cid)
         if not info:
@@ -877,7 +876,6 @@ async def register_handlers(dp: Dispatcher):
             name = ch[cid]['name']
             await delete_channel(cid)
             await cb.answer(f"✅ Канал {name} удалён", False)
-            # После удаления обновлённый список
             new_ch = await get_all_channels()
             if not new_ch:
                 await cb.message.delete()
@@ -1163,10 +1161,6 @@ async def startup():
     print("Бот готов")
     await dp_instance.start_polling(bot_instance)
 
-def run_async(coro):
-    """Запуск async-кода из Flask webhook-хендлеров (sync-контекст)."""
-    return asyncio.run(coro)
-
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
     if not CRYPTO_BOT_TOKEN:
@@ -1187,13 +1181,13 @@ def cryptobot_webhook():
             user_id = None
         if user_id:
             amount = int(float(invoice['amount']))
-            run_async(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                run_async(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
             except: pass
             for aid in ADMIN_IDS:
                 try:
-                    run_async(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
     return jsonify({'status': 'ok'})
 
@@ -1216,17 +1210,18 @@ def xrocket_webhook():
             user_id = None
         if user_id:
             amount = int(float(invoice.get('amount', 0)))
-            run_async(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                run_async(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
             except: pass
             for aid in ADMIN_IDS:
                 try:
-                    run_async(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
     return jsonify({'status': 'ok'})
 
-application = app
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(startup())
 
-if __name__ == "__main__":
-    asyncio.run(startup())
+application = app
