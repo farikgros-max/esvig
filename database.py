@@ -97,20 +97,26 @@ async def init_db():
                 description TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-        exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
-        if exists == 0:
-            default_cats = [
-                ('news', 'Новостные'),
-                ('trading', 'Торговые'),
-                ('analytics', 'Аналитика'),
-                ('nft', 'NFT'),
-                ('memes', 'Мемкоины'),
-                ('defi', 'DeFi')
-            ]
-            await conn.executemany(
-                'INSERT INTO categories (name, display_name) VALUES ($1, $2)',
-                default_cats
-            )
+
+        # Создаём категории при первом запуске, если их нет
+        await _ensure_default_categories(conn)
+
+async def _ensure_default_categories(conn):
+    """Проверяет и создаёт категории по умолчанию, если таблица пуста."""
+    exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
+    if exists == 0:
+        default_cats = [
+            ('news', 'Новостные'),
+            ('trading', 'Торговые'),
+            ('analytics', 'Аналитика'),
+            ('nft', 'NFT'),
+            ('memes', 'Мемкоины'),
+            ('defi', 'DeFi')
+        ]
+        await conn.executemany(
+            'INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
+            default_cats
+        )
 
 async def close_db():
     global pool
@@ -216,14 +222,19 @@ async def get_user_daily_info(user_id: int):
             used = row['daily_orders_count']
         return row['daily_limit'], used
 
-# ---------- Категории ----------
+# ---------- Категории (с автоматическим восстановлением) ----------
 async def get_all_categories():
     rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
+    if not rows:
+        # Категорий нет – создаём стандартные и пробуем снова
+        async with pool.acquire() as conn:
+            await _ensure_default_categories(conn)
+        rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
     return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
 
 async def add_category(name, display_name):
     async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2)', name, display_name)
+        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', name, display_name)
 
 async def delete_category(cat_id):
     async with pool.acquire() as conn:
@@ -235,7 +246,7 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (теперь с улучшенной попыткой и отладкой) ----------
+# ---------- Каналы ----------
 async def get_all_channels(category_id=None):
     if category_id is not None:
         rows = await _retry_fetch_best(
@@ -259,7 +270,6 @@ async def get_all_channels(category_id=None):
         }
     return ch
 
-# Остальные функции остаются без изменений
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
         await conn.execute('''
