@@ -13,6 +13,8 @@ Set these variables before running:
 - `WEBHOOK_URL` (optional)
 - `DATABASE_URL` (required by `database.py`)
 
+> Note: legacy fallback defaults are kept in `app.py` for `BOT_TOKEN` and `ADMIN_IDS` to avoid startup regressions on old deployments.
+
 ## Quick check
 ```bash
 python -m py_compile app.py database.py
