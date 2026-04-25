@@ -1160,7 +1160,11 @@ dp_instance = Dispatcher(storage=MemoryStorage())
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    await bot_instance.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+    await bot_instance.set_webhook(
+        WEBHOOK_URL,
+        drop_pending_updates=True,
+        secret_token=SECRET_TOKEN
+    )
     print(f"Webhook set to {WEBHOOK_URL}")
     print("Бот готов")
 
