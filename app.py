@@ -27,7 +27,23 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       close_db, get_or_create_user, update_user_balance, get_user_balance,
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
+from datetime import datetime, timedelta
+from aiogram import BaseMiddleware
 
+# Антифлуд: не чаще одного действия в 2 секунды
+last_message_time = {}
+
+class AntiFloodMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if hasattr(event, 'from_user') and event.from_user:
+            user_id = event.from_user.id
+            now = datetime.now()
+            if user_id in last_message_time:
+                elapsed = now - last_message_time[user_id]
+                if elapsed < timedelta(seconds=2):
+                    return
+            last_message_time[user_id] = now
+        return await handler(event, data)
 # ---------- Конфигурация (все секреты через переменные окружения) ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
