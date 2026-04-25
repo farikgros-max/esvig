@@ -100,11 +100,13 @@ async def admin_del_category(cb: CallbackQuery):
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов (с улучшенной загрузкой) ----------
+# ---------- Список каналов (с временной диагностикой) ----------
 @router.callback_query(F.data == "admin_list")
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     ch = await get_all_channels()
+    # Временная диагностика – покажем пользователю точное количество
+    await cb.message.answer(f"🔍 Диагностика: загружено каналов = {len(ch)}")
     if not ch:
         await cb.message.edit_text("❌ Не удалось загрузить каналы. Попробуйте позже.", reply_markup=get_main_keyboard(cb.from_user.id))
         await cb.answer()
