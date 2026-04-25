@@ -1163,6 +1163,10 @@ async def startup():
     print("Бот готов")
     await dp_instance.start_polling(bot_instance)
 
+def run_async(coro):
+    """Запуск async-кода из Flask webhook-хендлеров (sync-контекст)."""
+    return asyncio.run(coro)
+
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
     if not CRYPTO_BOT_TOKEN:
@@ -1183,13 +1187,13 @@ def cryptobot_webhook():
             user_id = None
         if user_id:
             amount = int(float(invoice['amount']))
-            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            run_async(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                run_async(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
             except: pass
             for aid in ADMIN_IDS:
                 try:
-                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    run_async(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
     return jsonify({'status': 'ok'})
 
@@ -1212,18 +1216,17 @@ def xrocket_webhook():
             user_id = None
         if user_id:
             amount = int(float(invoice.get('amount', 0)))
-            loop.run_until_complete(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
+            run_async(update_user_balance(user_id, amount, f"Пополнение USDT {amount}$"))
             try:
-                loop.run_until_complete(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
+                run_async(bot_instance.send_message(user_id, f"✅ Ваш баланс пополнен на {amount}$. Спасибо!"))
             except: pass
             for aid in ADMIN_IDS:
                 try:
-                    loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
+                    run_async(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
     return jsonify({'status': 'ok'})
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-loop.run_until_complete(startup())
-
 application = app
+
+if __name__ == "__main__":
+    asyncio.run(startup())
