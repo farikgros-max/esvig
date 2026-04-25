@@ -24,3 +24,6 @@ MIN_DEPOSIT = 0.1
 DAILY_ORDER_LIMIT = 3
 PAID_BTN_URL = "https://t.me/esvig_bot"
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
+
+# ID канала для обязательной подписки
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@esvig_service")
