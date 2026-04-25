@@ -29,7 +29,7 @@ ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production.up.railway.app/webhook")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
