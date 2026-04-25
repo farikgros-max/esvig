@@ -1157,17 +1157,13 @@ app = flask_app
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
+# ---------- Инициализация бота ----------
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    await bot_instance.set_webhook(
-        WEBHOOK_URL,
-        drop_pending_updates=True,
-        secret_token=SECRET_TOKEN   # ← обязательно
-    )
-    print(f"Webhook set to {WEBHOOK_URL}")
-    print("Бот готов")
-  
+    print("Бот готов (Long Polling)")
+
+# ---------- Платёжные вебхуки (без изменений, но используем asyncio.run) ----------
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
     if not CRYPTO_BOT_TOKEN:
@@ -1195,7 +1191,7 @@ def cryptobot_webhook():
                         asyncio.run(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                     except: pass
         except Exception as e:
-            print(f"Error in cryptobot webhook: {e}")
+            print(f"CryptoBot webhook error: {e}")
     return jsonify({'status': 'ok'})
 
 @app.route('/xrocket', methods=['POST'])
@@ -1224,26 +1220,15 @@ def xrocket_webhook():
                         asyncio.run(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                     except: pass
         except Exception as e:
-            print(f"Error in xrocket webhook: {e}")
+            print(f"XRocket webhook error: {e}")
     return jsonify({'status': 'ok'})
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    # Проверка секретного токена (включена!)
-    # if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
-    #   return jsonify({'status': 'unauthorized'}), 401
-    try:
-        upd = Update(**request.json)
-        asyncio.run(dp_instance.feed_update(bot_instance, upd))
-    except Exception as e:
-        print(f"Webhook error: {e}")
-    return jsonify({'status': 'ok'})
-
-# ------------------ Запуск ------------------
+# ---------- Запуск ----------
 if __name__ == "__main__":
-    # Инициализация и запуск Flask (для разработки можно использовать app.run)
+    # Запускаем БД и бота (Long Polling)
     asyncio.run(startup())
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-else:
-    # При деплое на Railway и т.п. инициализация произойдёт через gunicorn
-    asyncio.run(startup())
+    # В отдельном потоке запускаем Flask (для платёжных вебхуков)
+    import threading
+    threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': int(os.environ.get("PORT", 5000))}).start()
+    # Запускаем бесконечный опрос Telegram (это основной поток)
+    asyncio.run(dp_instance.start_polling(bot_instance, skip_updates=True))
