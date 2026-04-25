@@ -589,25 +589,31 @@ async def register_handlers(dp: Dispatcher):
                 "paid_btn_url": PAID_BTN_URL,
             }
 
-        try:
-            r = requests.post(url, json=payload, headers=headers, timeout=10)
-            data_resp = r.json()
-            if data_resp.get("ok"):
-                invoice_url = data_resp["result"]["pay_url"]
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
-                ])
-                await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
-            else:
-                await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
-        except requests.exceptions.ConnectionError:
-            await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
-        except Exception as e:
-            await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
-        finally:
-            await state.clear()
-
+            try:
+                r = requests.post(url, json=payload, headers=headers, timeout=10)
+                # Временный вывод в логи Railway
+                print(f"XRocket response status: {r.status_code}")
+                print(f"XRocket response body: {r.text}")
+                data_resp = r.json()
+                print(f"XRocket parsed JSON: {data_resp}")
+                
+                if data_resp.get("ok"):
+                    invoice_url = data_resp["result"]["pay_url"]
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                    ])
+                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+                else:
+                    # Покажем пользователю детали ошибки (только при отладке)
+                    error_msg = data_resp.get("error", "Неизвестная ошибка")
+                    await m.answer(f"Ошибка при создании счёта: {error_msg}", reply_markup=get_profile_keyboard())
+            except requests.exceptions.ConnectionError:
+                await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
+            except Exception as e:
+                await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
+            finally:
+                await state.clear()
         try:
             r = requests.post(url, json=payload, headers=headers)
             data_resp = r.json()
