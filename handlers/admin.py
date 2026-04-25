@@ -2,6 +2,8 @@ import os
 import asyncio
 import time
 import asyncpg
+import json
+import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -12,7 +14,7 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       get_or_create_user, update_user_balance, debit_balance, get_user_balance)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
-                    AdminBalanceStates)
+                    AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
                        get_admin_orders_keyboard, get_edit_channel_keyboard, get_stats_keyboard,
                        get_categories_admin_keyboard, get_category_actions_keyboard,
@@ -96,7 +98,6 @@ async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     ch = await get_all_channels()
     attempts = 0
-    # Повторяем запрос до 3 раз с паузой 0.5 сек, если каналов меньше двух
     while len(ch) < 2 and attempts < 3:
         await asyncio.sleep(0.5)
         ch = await get_all_channels()
@@ -309,6 +310,131 @@ async def a_desc(m: Message, state: FSMContext):
     cat_name = cat['display_name'] if cat else ""
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
     await state.clear()
+
+# ========== НОВЫЕ ИНСТРУМЕНТЫ ==========
+
+# ---------- Просмотр логов ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
+async def show_logs(m: Message):
+    try:
+        if not os.path.exists('bot_errors.log'):
+            await m.answer("Файл логов не найден.")
+            return
+        with open('bot_errors.log', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        last_lines = lines[-20:] if len(lines) >= 20 else lines
+        if not last_lines:
+            await m.answer("Логи пусты.")
+            return
+        text = "📄 Последние записи в логах:\n" + "".join(last_lines)
+        if len(text) > 4000:
+            text = text[-4000:]
+        await m.answer(text)
+    except Exception as e:
+        await m.answer(f"Ошибка при чтении логов: {e}")
+
+# ---------- Быстрое добавление канала по ссылке ----------
+@router.callback_query(F.data == "quick_add")
+async def quick_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Нет прав", show_alert=True)
+        return
+    await cb.message.edit_text(
+        "⚡ Отправьте ссылку на канал (например, https://t.me/username):",
+        reply_markup=cancel_keyboard()
+    )
+    await state.set_state(QuickAddStates.waiting_for_channel_link)
+    await cb.answer()
+
+@router.message(QuickAddStates.waiting_for_channel_link)
+async def quick_add_link_received(m: Message, state: FSMContext):
+    url = m.text.strip()
+    if not url.startswith("https://t.me/"):
+        await m.answer("Ссылка должна начинаться с https://t.me/")
+        return
+    try:
+        chat = await m.bot.get_chat(url)
+        name = chat.title or "Без названия"
+        try:
+            count = await m.bot.get_chat_member_count(chat.id)
+        except Exception:
+            count = 0
+        await state.update_data(quick_name=name, quick_subs=count, quick_url=url)
+        await m.answer(f"Канал: {name}\nПодписчиков: {count}\n\nВведите цену (число):")
+        await state.set_state(QuickAddStates.waiting_for_price)
+    except Exception as e:
+        await m.answer(f"Не удалось получить информацию о канале: {e}")
+        await state.clear()
+
+@router.message(QuickAddStates.waiting_for_price)
+async def quick_add_price_received(m: Message, state: FSMContext):
+    if not m.text.isdigit():
+        await m.answer("Введите цену целым числом.")
+        return
+    price = int(m.text)
+    data = await state.get_data()
+    cats = await get_all_categories()
+    cat_id = cats[0]['id'] if cats else None
+    new_id = f"channel_{int(time.time())}"
+    await add_channel(new_id, data['quick_name'], price, data['quick_subs'], data['quick_url'], "", cat_id)
+    await m.answer(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_keyboard())
+    await state.clear()
+
+# ---------- Массовое добавление каналов ----------
+@router.callback_query(F.data == "bulk_add")
+async def bulk_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Нет прав", show_alert=True)
+        return
+    await cb.message.edit_text(
+        "📥 Отправьте JSON-массив с данными каналов.\n"
+        "Формат: [{\"name\": \"...\", \"price\": ..., \"subscribers\": ..., \"url\": \"...\", \"description\": \"...\", \"category\": \"id\"}, ...]\n"
+        "Поля description и category необязательны.",
+        reply_markup=cancel_keyboard()
+    )
+    await state.set_state(MassAddStates.waiting_for_bulk_json)
+    await cb.answer()
+
+@router.message(MassAddStates.waiting_for_bulk_json)
+async def bulk_add_json_received(m: Message, state: FSMContext):
+    try:
+        data = json.loads(m.text.strip())
+        if not isinstance(data, list):
+            raise ValueError("Ожидался массив JSON")
+        added = 0
+        errors = []
+        for idx, item in enumerate(data):
+            try:
+                name = item['name']
+                price = int(item['price'])
+                subs = int(item.get('subscribers', 0))
+                url = item['url']
+                desc = item.get('description', '')
+                cat_id = item.get('category')
+                new_id = f"channel_{int(time.time())}_{idx}"
+                await add_channel(new_id, name, price, subs, url, desc, cat_id)
+                added += 1
+            except Exception as e:
+                errors.append(f"{item.get('name', 'неизвестно')}: {e}")
+        result = f"✅ Добавлено каналов: {added}"
+        if errors:
+            result += f"\n❌ Ошибки: {', '.join(errors[:5])}"
+        await m.answer(result, reply_markup=get_admin_keyboard())
+        await state.clear()
+    except json.JSONDecodeError:
+        await m.answer("Неверный JSON. Попробуйте снова.")
+    except Exception as e:
+        await m.answer(f"Ошибка при обработке: {e}")
+        await state.clear()
+
+# ---------- Отмена для новых состояний ----------
+@router.callback_query(F.data == "cancel_add_channel", MassAddStates.waiting_for_bulk_json)
+@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_channel_link)
+@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_price)
+async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
+    await cb.answer()
 
 # ---------- Заявки (просмотр и изменение статуса) ----------
 @router.callback_query(F.data == "admin_orders")
