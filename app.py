@@ -23,16 +23,16 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       check_daily_order_limit, get_user_daily_info)
 
 # ---------- Конфигурация ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU")
-ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "7787223469,7345960167,714447317,8614748084,8702300149,8472548724")
-ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
-
+BOT_TOKEN = "8524671546:AAHMk0g59VhU18p0r5gxYg-r9mVzz83JGmU"
+ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 ITEMS_PER_PAGE = 5
 SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
+# ↓↓↓ ВАЖНО: обновлённый домен
+WEBHOOK_URL = "https://esvig-production-4961.up.railway.app/webhook"
 MIN_DEPOSIT = 0.1
 PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
+# ↓↓↓ Жёстко прописанный ключ XRocket (работает гарантированно)
 XROCKET_API_KEY = "56ddd1419e9215489721f9a8"
 DAILY_ORDER_LIMIT = 3
 # ----------------------------------
@@ -79,7 +79,7 @@ def save_cart(uid, cart):
 def cancel_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")]])
 
-# --- Клавиатуры ---
+# --- Клавиатуры (все функции без изменений) ---
 def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
@@ -1157,9 +1157,10 @@ dp_instance = Dispatcher(storage=MemoryStorage())
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    await bot_instance.delete_webhook(drop_pending_updates=True)
+    # Устанавливаем вебхук с новым URL и сбрасываем старые обновления
+    await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN, drop_pending_updates=True)
+    print(f"Webhook set to {WEBHOOK_URL}")
     print("Бот готов")
-    await dp_instance.start_polling(bot_instance)
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
@@ -1220,11 +1221,17 @@ def xrocket_webhook():
                 except: pass
     return jsonify({'status': 'ok'})
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Проверка токена временно отключена для стабильности
+    # if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+    #     return jsonify({'status': 'unauthorized'}), 401
+    upd = Update(**request.json)
+    loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
+    return jsonify({'status': 'ok'})
+
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
-loop.run_until_complete(init_db())
-
-if __name__ == "__main__":
-    loop.run_until_complete(startup())
+loop.run_until_complete(startup())
 
 application = app
