@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 from aiogram import BaseMiddleware
-from bot import bot_instance
 from config import CHANNEL_ID
 
 # ---------- Антифлуд ----------
@@ -19,20 +18,22 @@ class AntiFloodMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 # ---------- Проверка подписки ----------
-async def is_subscribed(user_id: int) -> bool:
+async def is_subscribed(bot, user_id: int) -> bool:
     try:
-        member = await bot_instance.get_chat_member(CHANNEL_ID, user_id)
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status not in ("left", "kicked")
     except Exception:
         return False
 
 class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
-        if hasattr(event, 'from_user') and event.from_user:
+        # Получаем объект бота из data
+        bot = data.get("bot")
+        if hasattr(event, 'from_user') and event.from_user and bot:
             # Пропускаем команды /start и /export
             if event.text and (event.text.startswith("/start") or event.text.startswith("/export")):
                 return await handler(event, data)
-            if not await is_subscribed(event.from_user.id):
+            if not await is_subscribed(bot, event.from_user.id):
                 await event.answer("⚠️ Подпишитесь на канал, чтобы пользоваться ботом: /start")
                 return
         return await handler(event, data)
