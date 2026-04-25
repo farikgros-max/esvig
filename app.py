@@ -30,6 +30,8 @@ PAID_BTN_URL = "https://t.me/esvig_bot"
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
 XROCKET_API_KEY = "56ddd1419e9215489721f9a8"
 DAILY_ORDER_LIMIT = 3
+SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
+WEBHOOK_URL = "https://esvig-production.up.railway.app/webhook"
 
 class OrderForm(StatesGroup):
     waiting_for_budget = State()
@@ -1158,12 +1160,16 @@ app = flask_app
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
+# ВАЖНО: используем ваш актуальный домен
+WEBHOOK_URL = "https://esvig-production.up.railway.app/webhook"
+
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
     print("Бот готов")
-    await bot_instance.delete_webhook(drop_pending_updates=True)
-    await dp_instance.start_polling(bot_instance)
+    # Устанавливаем вебхук (проверка токена активна)
+    await bot_instance.set_webhook(WEBHOOK_URL, secret_token=SECRET_TOKEN)
+    print(f"Webhook set to {WEBHOOK_URL}")
 
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
@@ -1222,6 +1228,14 @@ def xrocket_webhook():
                 try:
                     loop.run_until_complete(bot_instance.send_message(aid, f"💰 Пользователь {user_id} пополнил баланс на {amount}$"))
                 except: pass
+    return jsonify({'status': 'ok'})
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
+        return jsonify({'status': 'unauthorized'}), 401
+    upd = Update(**request.json)
+    loop.run_until_complete(dp_instance.feed_update(bot_instance, upd))
     return jsonify({'status': 'ok'})
 
 loop = asyncio.new_event_loop()
