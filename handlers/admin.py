@@ -23,7 +23,7 @@ from config import ADMIN_IDS
 
 router = Router()
 
-# ---------- Обработчик текстовой кнопки "Админ‑панель" ----------
+# ---------- Вход в админ‑панель ----------
 @router.message(F.text == "🔑 Админ‑панель")
 async def admin_panel_msg(m: Message):
     if m.from_user.id in ADMIN_IDS:
@@ -31,7 +31,7 @@ async def admin_panel_msg(m: Message):
     else:
         await m.answer("Нет прав")
 
-# ========== Остальная админ‑панель ==========
+# ---------- Кнопка «Назад» и отмена ----------
 @router.callback_query(F.data == "cancel_add_channel")
 async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
@@ -100,7 +100,7 @@ async def admin_del_category(cb: CallbackQuery):
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов (теперь всегда полный) ----------
+# ---------- Список каналов (с улучшенной загрузкой) ----------
 @router.callback_query(F.data == "admin_list")
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -131,6 +131,7 @@ async def adm_view_chan(cb: CallbackQuery):
     await cb.message.edit_text(txt, reply_markup=kb)
     await cb.answer()
 
+# ---------- Редактирование канала ----------
 @router.callback_query(F.data.startswith("edit_channel_"))
 async def edit_chan_menu(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -245,7 +246,7 @@ async def adm_del(cb: CallbackQuery):
     else:
         await cb.answer("Канал не найден", True)
 
-# ---------- Добавление канала ----------
+# ---------- Добавление канала (стандартное) ----------
 @router.callback_query(F.data == "admin_add")
 async def adm_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
@@ -312,8 +313,7 @@ async def a_desc(m: Message, state: FSMContext):
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
     await state.clear()
 
-# ========== НОВЫЕ ИНСТРУМЕНТЫ ==========
-
+# ========== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ ==========
 # ---------- Просмотр логов ----------
 @router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
 async def show_logs(m: Message):
@@ -334,7 +334,7 @@ async def show_logs(m: Message):
     except Exception as e:
         await m.answer(f"Ошибка при чтении логов: {e}")
 
-# ---------- Быстрое добавление канала по ссылке ----------
+# ---------- Быстрое добавление канала ----------
 @router.callback_query(F.data == "quick_add")
 async def quick_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
@@ -437,7 +437,7 @@ async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
     await cb.answer()
 
-# ---------- Заявки (просмотр и изменение статуса) ----------
+# ---------- Заявки ----------
 @router.callback_query(F.data == "admin_orders")
 async def adm_orders(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
