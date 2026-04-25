@@ -1,24 +1,17 @@
 import os
 import asyncio
-import json
-import hashlib
-import hmac
 import time
+import logging
 import asyncpg
 import requests
-import logging
-
-logging.basicConfig(
-    filename='bot_errors.log',
-    level=logging.ERROR,
-    format='%(asctime)s %(levelname)s:%(message)s'
-)
-
+import hashlib
+import hmac
 from datetime import datetime, timedelta
+
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-                           ReplyKeyboardMarkup, KeyboardButton, FSInputFile, Update)
+                           ReplyKeyboardMarkup, KeyboardButton, FSInputFile)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -31,6 +24,17 @@ from database import (init_db, get_all_channels, add_channel, delete_channel, up
                       close_db, get_or_create_user, update_user_balance, get_user_balance,
                       debit_balance, return_balance, get_user_transactions,
                       check_daily_order_limit, get_user_daily_info)
+
+from config import (BOT_TOKEN, ADMIN_IDS, ITEMS_PER_PAGE, MIN_DEPOSIT,
+                    DAILY_ORDER_LIMIT, PAID_BTN_URL, WEBHOOK_URL,
+                    CRYPTO_BOT_TOKEN, XROCKET_API_KEY, SECRET_TOKEN)
+from texts import *
+
+logging.basicConfig(
+    filename='bot_errors.log',
+    level=logging.ERROR,
+    format='%(asctime)s %(levelname)s:%(message)s'
+)
 
 # ---------- Антифлуд ----------
 last_message_time = {}
@@ -46,26 +50,6 @@ class AntiFloodMiddleware(BaseMiddleware):
                     return
             last_message_time[user_id] = now
         return await handler(event, data)
-
-# ---------- Конфигурация ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не задан в переменных окружения!")
-
-ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
-if ADMIN_IDS_STR:
-    ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
-else:
-    ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
-
-ITEMS_PER_PAGE = 5
-SECRET_TOKEN = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
-MIN_DEPOSIT = 0.1
-PAID_BTN_URL = "https://t.me/esvig_bot"
-CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
-XROCKET_API_KEY = os.environ.get("XROCKET_API_KEY", "")
-DAILY_ORDER_LIMIT = 3
 
 # ---------- Состояния ----------
 class OrderForm(StatesGroup):
@@ -98,7 +82,7 @@ class AdminBalanceStates(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_amount = State()
 
-# ---------- Корзина (временное хранилище) ----------
+# ---------- Корзина ----------
 user_carts = {}
 
 def get_cart(uid):
@@ -304,7 +288,7 @@ async def register_handlers(dp: Dispatcher):
     async def start(m: Message):
         user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
         user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
-        caption = f"Рад видеть тебя, {user_name}!\n\n💰 Твой баланс: {user['balance']}$\n\n🚀 Приятных покупок! 🛍️"
+        caption = WELCOME_CAPTION.format(user_name=user_name, balance=user['balance'])
         try:
             if os.path.exists("welcome.jpg"):
                 photo = FSInputFile("welcome.jpg")
@@ -469,12 +453,12 @@ async def register_handlers(dp: Dispatcher):
             if cb.from_user.id in user_carts:
                 user_carts[cb.from_user.id] = [x for x in user_carts[cb.from_user.id] if not isinstance(x, dict) or '_adding' not in x]
 
-    # ========== Корзина (с подтверждением удаления) ==========
+    # ========== Корзина ==========
     @dp.message(F.text == "🛒 Корзина")
     async def cart(m: Message):
         c = get_cart(m.from_user.id)
         if not c:
-            await m.answer("Корзина пуста")
+            await m.answer(CART_EMPTY)
             return
         total = sum(i['price'] for i in c)
         items_str = "\n".join(f"{idx+1}. {i['name']} — {i['price']}$" for idx,i in enumerate(c))
@@ -485,7 +469,7 @@ async def register_handlers(dp: Dispatcher):
         user_carts[cb.from_user.id] = []
         await cb.answer("🗑 Корзина очищена", False)
         await cb.message.delete()
-        await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+        await cb.message.answer(CART_EMPTY, reply_markup=get_main_keyboard(cb.from_user.id))
 
     @dp.callback_query(F.data.startswith("remove_"))
     async def ask_remove_item(cb: CallbackQuery):
@@ -517,7 +501,7 @@ async def register_handlers(dp: Dispatcher):
             await cb.answer("Ошибка: товар уже не существует", show_alert=True)
         if not cart:
             await cb.message.delete()
-            await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+            await cb.message.answer(CART_EMPTY, reply_markup=get_main_keyboard(cb.from_user.id))
         else:
             total = sum(i['price'] for i in cart)
             items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
@@ -532,7 +516,7 @@ async def register_handlers(dp: Dispatcher):
         cart = get_cart(cb.from_user.id)
         if not cart:
             await cb.message.delete()
-            await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+            await cb.message.answer(CART_EMPTY, reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
             return
         total = sum(i['price'] for i in cart)
@@ -547,7 +531,7 @@ async def register_handlers(dp: Dispatcher):
     async def checkout_cb(cb: CallbackQuery, state: FSMContext):
         cart = get_cart(cb.from_user.id)
         if not cart:
-            await cb.message.edit_text("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+            await cb.message.edit_text(CART_EMPTY, reply_markup=get_main_keyboard(cb.from_user.id))
             await cb.answer()
             return
         total = sum(i['price'] for i in cart)
@@ -583,13 +567,13 @@ async def register_handlers(dp: Dispatcher):
         can_order = await check_daily_order_limit(m.from_user.id)
         if not can_order:
             user_info = await get_or_create_user(m.from_user.id)
-            await m.answer(f"❌ Вы исчерпали дневной лимит заявок ({user_info['daily_limit']}). Попробуйте завтра.")
+            await m.answer(DAILY_LIMIT.format(limit=user_info['daily_limit']))
             await state.clear()
             return
 
         balance = await get_user_balance(m.from_user.id)
         if balance < total:
-            await m.answer(f"❌ Недостаточно средств. Ваш баланс: {balance}$, сумма заказа: {total}$.\nПополните баланс в разделе «👤 Мой профиль» → «💰 Пополнить баланс».")
+            await m.answer(NO_FUNDS.format(balance=balance, total=total))
             await state.clear()
             return
 
@@ -608,7 +592,7 @@ async def register_handlers(dp: Dispatcher):
                 await m.bot.send_message(aid, report)
             except: pass
         user_carts[m.from_user.id] = []
-        await m.answer(f"✅ Заказ #{order_id} оформлен и оплачен! Сумма {total}$ списана с баланса.\nМенеджер скоро свяжется с вами.",
+        await m.answer(ORDER_SUCCESS.format(order_id=order_id, total=total),
                        reply_markup=get_main_keyboard(m.from_user.id))
         await state.clear()
 
@@ -633,14 +617,14 @@ async def register_handlers(dp: Dispatcher):
             except Exception:
                 pass
 
-            txt = (
-                f"👤 Мой профиль\n\n"
-                f"🆔 ID: {m.from_user.id}\n"
-                f"📛 Username: @{m.from_user.username or 'не указан'}\n"
-                f"📦 Успешных заказов: {total_orders}\n"
-                f"💰 Общая сумма трат: {total_spent}$\n"
-                f"💳 Баланс: {user.get('balance', 0)}$\n"
-                f"📅 Осталось заявок сегодня: {left_orders}/{daily_limit if daily_limit > 0 else '∞'}"
+            txt = PROFILE_TEMPLATE.format(
+                user_id=m.from_user.id,
+                username=m.from_user.username or 'не указан',
+                total_orders=total_orders,
+                total_spent=total_spent,
+                balance=user.get('balance', 0),
+                left_orders=left_orders,
+                daily_limit=daily_limit if daily_limit > 0 else '∞'
             )
             await m.answer(txt, reply_markup=get_profile_keyboard())
         except Exception as e:
@@ -660,7 +644,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "deposit_crypto")
     async def deposit_crypto_start(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text(
-            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+            DEPOSIT_PROMPT.format(min_deposit=MIN_DEPOSIT),
             reply_markup=cancel_keyboard()
         )
         await state.set_state(OrderForm.waiting_for_deposit_amount)
@@ -670,7 +654,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "deposit_xrocket")
     async def deposit_xrocket_start(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text(
-            f"💰 Введите сумму пополнения в USDT (минимум {MIN_DEPOSIT}$):",
+            DEPOSIT_PROMPT.format(min_deposit=MIN_DEPOSIT),
             reply_markup=cancel_keyboard()
         )
         await state.set_state(OrderForm.waiting_for_deposit_amount)
@@ -693,7 +677,7 @@ async def register_handlers(dp: Dispatcher):
             return
 
         if amount < MIN_DEPOSIT:
-            await m.answer(f"Минимальная сумма пополнения — {MIN_DEPOSIT} USDT. Попробуйте ещё раз.")
+            await m.answer(MIN_DEPOSIT_ERROR.format(min_deposit=MIN_DEPOSIT))
             return
 
         current_state = await state.get_state()
@@ -771,8 +755,7 @@ async def register_handlers(dp: Dispatcher):
     @dp.callback_query(F.data == "check_payment")
     async def check_payment_handler(cb: CallbackQuery):
         await cb.message.edit_text(
-            "ℹ️ Если вы только что оплатили счёт, баланс зачислится автоматически в течение минуты.\n"
-            "Если этого не произошло, напишите в поддержку: @esvig_support",
+            CHECK_PAYMENT_MESSAGE,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
             ])
@@ -1307,17 +1290,17 @@ async def register_handlers(dp: Dispatcher):
     # Текстовые сообщения
     @dp.message(F.text == "ℹ️ О сервисе")
     async def about(m: Message):
-        await m.answer("ℹ️ О сервисе ESVIG Service\n\nМы помогаем размещать рекламу в проверенных Telegram-каналах крипто-тематики.\n\n✅ Наши преимущества:\n• Только каналы с высокой вовлечённостью (ER > 2%)\n• Полная предоплата от рекламодателя\n• Отчёт по каждому размещению\n• Быстрая связь с администраторами каналов")
+        await m.answer(ABOUT_MESSAGE)
 
     @dp.message(F.text == "❓ FAQ")
     async def faq(m: Message):
-        await m.answer("❓ Часто задаваемые вопросы\n\n1️⃣ Как я могу оплатить рекламу?\n   Оплата принимается в USDT (TRC20 или BEP20). Вы переводите полную сумму нам, мы гарантируем размещение.\n\n2️⃣ Что если пост не выйдет?\n   Мы вернём 100% предоплаты. Случаев невыхода не было.\n\n3️⃣ Какой срок размещения?\n   Обычно пост выходит в течение 24 часов после оплаты.\n\n4️⃣ Могу ли я выбрать каналы сам?\n   Да, вы можете просмотреть каталог и добавить любые каналы в корзину.\n\n5️⃣ Как узнать статистику поста?\n   Через 24 часа после публикации мы пришлём вам отчёт: просмотры, реакции, ER.\n\nПо остальным вопросам пишите @esvig_support.")
+        await m.answer(FAQ_MESSAGE)
 
     @dp.message(F.text == "📞 Контакты")
     async def contacts(m: Message):
-        await m.answer("📞 Контакты\n\n• Support: @esvig_support\n• Наш канал: https://t.me/esvig_service\n• По поводу сотрудничества/рекламы: @zoldya_vv")
+        await m.answer(CONTACTS_MESSAGE)
 
-# ---------- HTTP-сервер (aiohttp) для платёжных вебхуков ----------
+# ---------- HTTP-сервер для платёжных вебхуков ----------
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
