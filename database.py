@@ -1,615 +1,343 @@
-import os
-import asyncio
-import time
 import asyncpg
 import json
-import logging
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
+import os
+import asyncio
 
-from database import (get_all_channels, add_channel, delete_channel, update_channel,
-                      get_orders, get_order_by_id, update_order_status, return_balance,
-                      clear_non_successful_orders, clear_all_orders,
-                      get_all_categories, add_category, delete_category, get_category_by_id,
-                      get_or_create_user, update_user_balance, debit_balance, get_user_balance)
-from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
-                    AdminBalanceStates, MassAddStates, QuickAddStates)
-from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
-                       get_admin_orders_keyboard, get_edit_channel_keyboard, get_stats_keyboard,
-                       get_categories_admin_keyboard, get_category_actions_keyboard,
-                       get_category_selection_keyboard, cancel_keyboard, get_main_keyboard)
-from config import ADMIN_IDS
+DATABASE_URL = os.environ.get("DATABASE_URL")
+pool = None
 
-router = Router()
-
-# ---------- Обработчик текстовой кнопки "Админ‑панель" ----------
-@router.message(F.text == "🔑 Админ‑панель")
-async def admin_panel_msg(m: Message):
-    if m.from_user.id in ADMIN_IDS:
-        await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
-    else:
-        await m.answer("Нет прав")
-
-# ========== Остальная админ‑панель ==========
-@router.callback_query(F.data == "cancel_add_channel")
-async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
-    await state.clear()
-    await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
-    await cb.answer()
-
-@router.callback_query(F.data == "admin_back")
-async def adm_back(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
-    await cb.answer()
-
-# ---------- Управление категориями ----------
-@router.callback_query(F.data == "admin_categories")
-async def admin_categories_menu(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    await cb.message.edit_text("🏷 Управление категориями", reply_markup=await get_categories_admin_keyboard(get_all_categories))
-    await cb.answer()
-
-@router.callback_query(F.data == "admin_add_category")
-async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    await cb.message.edit_text("Введите **короткое имя** категории (на английском, например 'mining'):", parse_mode="Markdown")
-    await state.set_state(AddCategoryStates.waiting_for_name)
-    await cb.answer()
-
-@router.message(AddCategoryStates.waiting_for_name)
-async def add_cat_name(m: Message, state: FSMContext):
-    name = m.text.strip()
-    if not name:
-        await m.answer("Имя не может быть пустым")
-        return
-    await state.update_data(name=name)
-    await m.answer("Введите отображаемое название категории (например 'Майнинг'):")
-    await state.set_state(AddCategoryStates.waiting_for_display_name)
-
-@router.message(AddCategoryStates.waiting_for_display_name)
-async def add_cat_display(m: Message, state: FSMContext):
-    data = await state.get_data()
-    name = data['name']
-    display = m.text.strip()
-    if not display:
-        await m.answer("Название не может быть пустым")
-        return
-    await add_category(name, display)
-    await m.answer(f"✅ Категория '{display}' добавлена", reply_markup=get_admin_keyboard())
-    await state.clear()
-
-@router.callback_query(F.data.startswith("admin_category_"))
-async def admin_category_detail(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    cat_id = int(cb.data.split("_")[2])
-    cat = await get_category_by_id(cat_id)
-    if not cat:
-        await cb.answer("Категория не найдена", True)
-        return
-    await cb.message.edit_text(f"Категория: {cat['display_name']} (id={cat_id}, имя={cat['name']})", reply_markup=get_category_actions_keyboard(cat_id))
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("admin_del_category_"))
-async def admin_del_category(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    cat_id = int(cb.data.split("_")[3])
-    await delete_category(cat_id)
-    await cb.answer("Категория удалена", False)
-    await admin_categories_menu(cb)
-
-# ---------- Список каналов (теперь всегда полный) ----------
-@router.callback_query(F.data == "admin_list")
-async def adm_list(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ch = await get_all_channels()
-    if not ch:
-        await cb.message.edit_text("❌ Не удалось загрузить каналы. Попробуйте позже.", reply_markup=get_main_keyboard(cb.from_user.id))
-        await cb.answer()
-        return
-    await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("admin_view_"))
-async def adm_view_chan(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ch = await get_all_channels()
-    cid = cb.data.replace("admin_view_", "")
-    info = ch.get(cid)
-    if not info: await cb.answer("Канал не найден", True); return
-    cat_name = ""
-    if info.get('category_id'):
-        cat = await get_category_by_id(info['category_id'])
-        if cat:
-            cat_name = cat['display_name']
-    txt = f"📌 {info['name']}\n🔗 {info['url']}\n💰 {info['price']}$\n👥 {info['subscribers']} подп.\n📝 {info.get('description','Нет описания')}"
-    if cat_name:
-        txt += f"\n🏷 {cat_name}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
-    await cb.message.edit_text(txt, reply_markup=kb)
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("edit_channel_"))
-async def edit_chan_menu(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    cid = cb.data.replace("edit_channel_", "")
-    ch = await get_all_channels()
-    if cid not in ch: await cb.answer("Канал не найден", True); return
-    await cb.message.edit_text(f"Редактирование канала {ch[cid]['name']}\nВыберите, что изменить:", reply_markup=get_edit_channel_keyboard(cid))
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("edit_") & ~F.data.startswith("edit_channel_"))
-async def edit_field(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    parts = cb.data.split("_",2)
-    if len(parts)<3: await cb.answer("Ошибка", True); return
-    cid, field = parts[1], parts[2]
-    ch = await get_all_channels()
-    if cid not in ch: await cb.answer("Канал не найден", True); return
-    await state.update_data(ch_id=cid, field=field)
-    if field == 'category':
-        await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(get_all_categories, f"edit_chan_cat_{cid}"))
-        await state.set_state(EditChannelStates.waiting_for_category)
-    else:
-        prompts = {'name':'Введите новое название:','price':'Введите новую цену (число):','subscribers':'Введите новое количество подписчиков (число):','url':'Введите новую ссылку (https://t.me/...):','description':'Введите новое описание:'}
-        await cb.message.edit_text(prompts.get(field, "Введите значение:"))
-        if field=='name': await state.set_state(EditChannelStates.waiting_for_name)
-        elif field=='price': await state.set_state(EditChannelStates.waiting_for_price)
-        elif field=='subscribers': await state.set_state(EditChannelStates.waiting_for_subscribers)
-        elif field=='url': await state.set_state(EditChannelStates.waiting_for_url)
-        elif field=='description': await state.set_state(EditChannelStates.waiting_for_description)
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("edit_chan_cat_"))
-async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    parts = cb.data.split("_")
-    cid = parts[3]
-    cat_id = int(parts[4])
-    await update_channel(cid, category_id=cat_id)
-    await cb.answer("Категория обновлена", False)
-    await adm_view_chan(cb)
-    await state.clear()
-
-@router.message(EditChannelStates.waiting_for_name)
-async def e_name(m: Message, state: FSMContext):
-    d = await state.get_data()
-    await update_channel(d['ch_id'], name=m.text)
-    await m.answer(f"✅ Название изменено на {m.text}")
-    await state.clear()
-
-@router.message(EditChannelStates.waiting_for_price)
-async def e_price(m: Message, state: FSMContext):
-    if not m.text.isdigit(): await m.answer("Введите число"); return
-    d = await state.get_data()
-    await update_channel(d['ch_id'], price=int(m.text))
-    await m.answer(f"✅ Цена изменена на {m.text}$")
-    await state.clear()
-
-@router.message(EditChannelStates.waiting_for_subscribers)
-async def e_subs(m: Message, state: FSMContext):
-    if not m.text.isdigit(): await m.answer("Введите число"); return
-    d = await state.get_data()
-    await update_channel(d['ch_id'], subs=int(m.text))
-    await m.answer(f"✅ Количество подписчиков изменено на {m.text}")
-    await state.clear()
-
-@router.message(EditChannelStates.waiting_for_url)
-async def e_url(m: Message, state: FSMContext):
-    url = m.text.strip()
-    if not url.startswith("https://t.me/"):
-        await m.answer("Ссылка должна начинаться с https://t.me/")
-        return
-    d = await state.get_data()
-    await update_channel(d['ch_id'], url=url)
-    await m.answer(f"✅ Ссылка изменена на {url}")
-    await state.clear()
-
-@router.message(EditChannelStates.waiting_for_description)
-async def e_desc(m: Message, state: FSMContext):
-    d = await state.get_data()
-    await update_channel(d['ch_id'], desc=m.text)
-    await m.answer("✅ Описание изменено")
-    await state.clear()
-
-# ---------- Удаление канала ----------
-@router.callback_query(F.data == "admin_remove")
-async def adm_rem_menu(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ch = await get_all_channels()
-    if not ch:
-        await cb.message.delete()
-        await cb.message.answer("Нет каналов для удаления", reply_markup=get_main_keyboard(cb.from_user.id))
-        await cb.answer()
-        return
-    await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard(ch))
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("admin_del_"))
-async def adm_del(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    cid = cb.data.replace("admin_del_", "")
-    ch = await get_all_channels()
-    if cid in ch:
-        name = ch[cid]['name']
-        await delete_channel(cid)
-        await cb.answer(f"✅ Канал {name} удалён", False)
-        new_ch = await get_all_channels()
-        if not new_ch:
-            await cb.message.delete()
-            await cb.message.answer("Все каналы удалены", reply_markup=get_main_keyboard(cb.from_user.id))
-        else:
-            await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard(new_ch))
-    else:
-        await cb.answer("Канал не найден", True)
-
-# ---------- Добавление канала ----------
-@router.callback_query(F.data == "admin_add")
-async def adm_add_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard(get_all_categories, "add_chan_cat"))
-    await state.set_state(AddChannelStates.waiting_for_category)
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("add_chan_cat_"), AddChannelStates.waiting_for_category)
-async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    cat_id = int(cb.data.split("_")[3])
-    await state.update_data(category_id=cat_id)
-    await cb.message.edit_text("Введите название канала:", reply_markup=cancel_keyboard())
-    await state.set_state(AddChannelStates.waiting_for_name)
-    await cb.answer()
-
-@router.message(AddChannelStates.waiting_for_name)
-async def a_name(m: Message, state: FSMContext):
-    await state.update_data(name=m.text)
-    await m.answer("Введите цену (число):", reply_markup=cancel_keyboard())
-    await state.set_state(AddChannelStates.waiting_for_price)
-
-@router.message(AddChannelStates.waiting_for_price)
-async def a_price(m: Message, state: FSMContext):
-    if not m.text.isdigit():
-        await m.answer("Введите число")
-        return
-    await state.update_data(price=int(m.text))
-    await m.answer("Введите количество подписчиков (число):", reply_markup=cancel_keyboard())
-    await state.set_state(AddChannelStates.waiting_for_subscribers)
-
-@router.message(AddChannelStates.waiting_for_subscribers)
-async def a_subs(m: Message, state: FSMContext):
-    if not m.text.isdigit():
-        await m.answer("Введите число")
-        return
-    await state.update_data(subscribers=int(m.text))
-    await m.answer("Введите ссылку (https://t.me/...):", reply_markup=cancel_keyboard())
-    await state.set_state(AddChannelStates.waiting_for_url)
-
-@router.message(AddChannelStates.waiting_for_url)
-async def a_url(m: Message, state: FSMContext):
-    url = m.text.strip()
-    if not url.startswith("https://t.me/"):
-        await m.answer("Ссылка должна начинаться с https://t.me/")
-        return
-    await state.update_data(url=url)
-    await m.answer("Введите описание канала:", reply_markup=cancel_keyboard())
-    await state.set_state(AddChannelStates.waiting_for_description)
-
-@router.message(AddChannelStates.waiting_for_description)
-async def a_desc(m: Message, state: FSMContext):
-    await state.update_data(description=m.text)
-    data = await state.get_data()
-    new_id = f"channel_{int(time.time())}"
-    cat_id = data['category_id']
-    await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-    cat = await get_category_by_id(cat_id)
-    cat_name = cat['display_name'] if cat else ""
-    await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
-    await state.clear()
-
-# ========== НОВЫЕ ИНСТРУМЕНТЫ ==========
-
-# ---------- Просмотр логов ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
-async def show_logs(m: Message):
-    try:
-        if not os.path.exists('bot_errors.log'):
-            await m.answer("Файл логов не найден.")
-            return
-        with open('bot_errors.log', 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        last_lines = lines[-20:] if len(lines) >= 20 else lines
-        if not last_lines:
-            await m.answer("Логи пусты.")
-            return
-        text = "📄 Последние записи в логах:\n" + "".join(last_lines)
-        if len(text) > 4000:
-            text = text[-4000:]
-        await m.answer(text)
-    except Exception as e:
-        await m.answer(f"Ошибка при чтении логов: {e}")
-
-# ---------- Быстрое добавление канала по ссылке ----------
-@router.callback_query(F.data == "quick_add")
-async def quick_add_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    await cb.message.edit_text(
-        "⚡ Отправьте ссылку на канал (например, https://t.me/username):",
-        reply_markup=cancel_keyboard()
-    )
-    await state.set_state(QuickAddStates.waiting_for_channel_link)
-    await cb.answer()
-
-@router.message(QuickAddStates.waiting_for_channel_link)
-async def quick_add_link_received(m: Message, state: FSMContext):
-    url = m.text.strip()
-    if not url.startswith("https://t.me/"):
-        await m.answer("Ссылка должна начинаться с https://t.me/")
-        return
-    try:
-        chat = await m.bot.get_chat(url)
-        name = chat.title or "Без названия"
+# ---------- Улучшенная повторная попытка с выбором лучшего результата ----------
+async def _retry_fetch_best(query, *args, fetch_all=True, max_retries=3, delay=0.5):
+    """
+    Выполняет SELECT-запрос до max_retries раз.
+    Если fetch_all=True, возвращает самый длинный список из всех попыток.
+    Если fetch_all=False, возвращает первый не-None результат.
+    """
+    best_result = [] if fetch_all else None
+    for attempt in range(max_retries):
         try:
-            count = await m.bot.get_chat_member_count(chat.id)
-        except Exception:
+            async with pool.acquire() as conn:
+                if fetch_all:
+                    rows = await conn.fetch(query, *args)
+                    if len(rows) > len(best_result):
+                        best_result = rows
+                else:
+                    row = await conn.fetchrow(query, *args)
+                    if row is not None:
+                        return row
+        except (OSError, asyncpg.exceptions.ConnectionDoesNotExistError,
+                asyncpg.exceptions.InterfaceError) as e:
+            print(f"[DB] Ошибка соединения: {e}, попытка {attempt+1}")
+            if pool:
+                await pool.close()
+            pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
+        except Exception as e:
+            print(f"[DB] Неожиданная ошибка: {e}, попытка {attempt+1}")
+        if attempt < max_retries - 1:
+            await asyncio.sleep(delay * (attempt + 1))
+    return best_result if fetch_all else None
+
+# ---------- Инициализация БД ----------
+async def init_db():
+    global pool
+    if pool is not None:
+        return
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
+
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS categories (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS channels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                subscribers INTEGER NOT NULL,
+                url TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                username TEXT,
+                cart TEXT,
+                total INTEGER,
+                budget INTEGER,
+                contact TEXT,
+                status TEXT DEFAULT 'в обработке',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                balance INTEGER DEFAULT 0,
+                daily_limit INTEGER DEFAULT 3,
+                daily_orders_count INTEGER DEFAULT 0,
+                last_order_date DATE DEFAULT CURRENT_DATE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                type TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                order_id INTEGER REFERENCES orders(id),
+                description TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
+        if exists == 0:
+            default_cats = [
+                ('news', 'Новостные'),
+                ('trading', 'Торговые'),
+                ('analytics', 'Аналитика'),
+                ('nft', 'NFT'),
+                ('memes', 'Мемкоины'),
+                ('defi', 'DeFi')
+            ]
+            await conn.executemany(
+                'INSERT INTO categories (name, display_name) VALUES ($1, $2)',
+                default_cats
+            )
+
+async def close_db():
+    global pool
+    if pool:
+        await pool.close()
+        pool = None
+
+# ---------- Пользователи и баланс ----------
+async def get_or_create_user(user_id: int, username: str = None):
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+        if not user:
+            await conn.execute(
+                'INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date) VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)',
+                user_id, username
+            )
+            return {'user_id': user_id, 'username': username, 'balance': 0, 'daily_limit': 3, 'daily_orders_count': 0}
+        if username and user['username'] != username:
+            await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
+        return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance'],
+                'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count']}
+
+async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'пополнение', $2, $3)",
+                user_id, amount, description
+            )
+
+async def debit_balance(user_id: int, amount: int, order_id: int, description: str = "Списание за заказ"):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cur_balance = await conn.fetchval(
+                'SELECT balance FROM users WHERE user_id = $1 FOR UPDATE', user_id
+            )
+            if cur_balance is None or cur_balance < amount:
+                return False
+            await conn.execute(
+                'UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'списание', $2, $3, $4)",
+                user_id, amount, order_id, description
+            )
+            return True
+
+async def return_balance(user_id: int, amount: int, order_id: int, description: str = "Возврат за отмену заказа"):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'возврат', $2, $3, $4)",
+                user_id, amount, order_id, description
+            )
+
+async def get_user_balance(user_id):
+    async with pool.acquire() as conn:
+        return await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id) or 0
+
+async def get_user_transactions(user_id, limit=10):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT type, amount, description, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+            user_id, limit
+        )
+        return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
+
+# ---------- Дневной лимит ----------
+async def check_daily_order_limit(user_id: int) -> bool:
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+        if not user:
+            return False
+        today = await conn.fetchval('SELECT CURRENT_DATE')
+        if user['last_order_date'] != today:
+            await conn.execute('UPDATE users SET daily_orders_count = 0, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
             count = 0
-        await state.update_data(quick_name=name, quick_subs=count, quick_url=url)
-        await m.answer(f"Канал: {name}\nПодписчиков: {count}\n\nВведите цену (число):")
-        await state.set_state(QuickAddStates.waiting_for_price)
-    except Exception as e:
-        await m.answer(f"Не удалось получить информацию о канале: {e}")
-        await state.clear()
-
-@router.message(QuickAddStates.waiting_for_price)
-async def quick_add_price_received(m: Message, state: FSMContext):
-    if not m.text.isdigit():
-        await m.answer("Введите цену целым числом.")
-        return
-    price = int(m.text)
-    data = await state.get_data()
-    cats = await get_all_categories()
-    cat_id = cats[0]['id'] if cats else None
-    new_id = f"channel_{int(time.time())}"
-    await add_channel(new_id, data['quick_name'], price, data['quick_subs'], data['quick_url'], "", cat_id)
-    await m.answer(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_keyboard())
-    await state.clear()
-
-# ---------- Массовое добавление каналов ----------
-@router.callback_query(F.data == "bulk_add")
-async def bulk_add_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    await cb.message.edit_text(
-        "📥 Отправьте JSON-массив с данными каналов.\n"
-        "Формат: [{\"name\": \"...\", \"price\": ..., \"subscribers\": ..., \"url\": \"...\", \"description\": \"...\", \"category\": \"id\"}, ...]\n"
-        "Поля description и category необязательны.",
-        reply_markup=cancel_keyboard()
-    )
-    await state.set_state(MassAddStates.waiting_for_bulk_json)
-    await cb.answer()
-
-@router.message(MassAddStates.waiting_for_bulk_json)
-async def bulk_add_json_received(m: Message, state: FSMContext):
-    try:
-        data = json.loads(m.text.strip())
-        if not isinstance(data, list):
-            raise ValueError("Ожидался массив JSON")
-        added = 0
-        errors = []
-        for idx, item in enumerate(data):
-            try:
-                name = item['name']
-                price = int(item['price'])
-                subs = int(item.get('subscribers', 0))
-                url = item['url']
-                desc = item.get('description', '')
-                cat_id = item.get('category')
-                new_id = f"channel_{int(time.time())}_{idx}"
-                await add_channel(new_id, name, price, subs, url, desc, cat_id)
-                added += 1
-            except Exception as e:
-                errors.append(f"{item.get('name', 'неизвестно')}: {e}")
-        result = f"✅ Добавлено каналов: {added}"
-        if errors:
-            result += f"\n❌ Ошибки: {', '.join(errors[:5])}"
-        await m.answer(result, reply_markup=get_admin_keyboard())
-        await state.clear()
-    except json.JSONDecodeError:
-        await m.answer("Неверный JSON. Попробуйте снова.")
-    except Exception as e:
-        await m.answer(f"Ошибка при обработке: {e}")
-        await state.clear()
-
-# ---------- Отмена для новых состояний ----------
-@router.callback_query(F.data == "cancel_add_channel", MassAddStates.waiting_for_bulk_json)
-@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_channel_link)
-@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_price)
-async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
-    await cb.answer()
-
-# ---------- Заявки (просмотр и изменение статуса) ----------
-@router.callback_query(F.data == "admin_orders")
-async def adm_orders(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ords = await get_orders(20)
-    if not ords: await cb.message.edit_text("Нет заявок", reply_markup=get_main_keyboard(cb.from_user.id)); await cb.answer(); return
-    await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("admin_order_"))
-async def adm_view_order(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    oid = int(cb.data.split("_")[2])
-    ordd = await get_order_by_id(oid)
-    if not ordd: await cb.answer("Заявка не найдена", True); return
-    em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(ordd['status'],'⚪')
-    txt = f"📄 Заявка #{ordd['id']}\n👤 @{ordd['username']}\n💰 Сумма: {ordd['total']}$\n📌 Статус: {em} {ordd['status']}\n\nВыберите новый статус:"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟡 В обработке", callback_data=f"set_status_{oid}_в обработке")],
-        [InlineKeyboardButton(text="🟢 Оплачена", callback_data=f"set_status_{oid}_оплачена")],
-        [InlineKeyboardButton(text="✅ Выполнена", callback_data=f"set_status_{oid}_выполнена")],
-        [InlineKeyboardButton(text="❌ Отменена", callback_data=f"set_status_{oid}_отменена")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_orders")]
-    ])
-    await cb.message.edit_text(txt, reply_markup=kb)
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("set_status_"))
-async def set_st(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    parts = cb.data.split("_")
-    oid = int(parts[2])
-    new_st = "_".join(parts[3:])
-    order = await get_order_by_id(oid)
-    if not order: await cb.answer("Заявка не найдена", True); return
-
-    old_status = order['status']
-    if new_st == 'отменена' and old_status == 'оплачена':
-        await return_balance(order['user_id'], order['total'], oid, f"Возврат за отмену заказа #{oid} админом")
-        try:
-            await cb.bot.send_message(order['user_id'], f"📢 Ваша заявка #{oid} была отменена администратором. Средства возвращены на баланс.")
-        except: pass
-        for aid in ADMIN_IDS:
-            if aid != cb.from_user.id:
-                try:
-                    await cb.bot.send_message(aid, f"❌ Админ отменил заявку #{oid} (возврат {order['total']}$)")
-                except: pass
-
-    await update_order_status(oid, new_st)
-    await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
-    try:
-        await cb.bot.send_message(order['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
-    except: pass
-    ords = await get_orders(20)
-    await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
-
-# ---------- Статистика ----------
-@router.callback_query(F.data == "admin_stats")
-async def admin_stats_cb(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-    tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
-    stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
-    chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
-    week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
-    await conn.close()
-    status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
-    week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week) if week else ""
-    txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum or 0}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n{status_lines}\n"
-    if week_lines:
-        txt += f"\n📅 Последние 7 дней:\n{week_lines}"
-    await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
-    await cb.answer()
-
-# ---------- Ручное изменение баланса ----------
-@router.callback_query(F.data == "admin_balance")
-async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    await cb.message.edit_text("Введите Telegram ID пользователя:", reply_markup=cancel_keyboard())
-    await state.set_state(AdminBalanceStates.waiting_for_user_id)
-    await cb.answer()
-
-@router.message(AdminBalanceStates.waiting_for_user_id)
-async def process_balance_user_id(m: Message, state: FSMContext):
-    if not m.text.isdigit():
-        await m.answer("Введите числовой ID")
-        return
-    target_id = int(m.text)
-    await state.update_data(target_id=target_id)
-    await m.answer("Введите сумму (положительное – пополнение, отрицательное – списание):", reply_markup=cancel_keyboard())
-    await state.set_state(AdminBalanceStates.waiting_for_amount)
-
-@router.message(AdminBalanceStates.waiting_for_amount)
-async def process_balance_amount(m: Message, state: FSMContext):
-    try:
-        amount = int(m.text.strip())
-    except ValueError:
-        await m.answer("Введите целое число")
-        return
-    data = await state.get_data()
-    target_id = data['target_id']
-    await get_or_create_user(target_id)
-    if amount >= 0:
-        await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
-        await m.answer(f"✅ Баланс пользователя {target_id} пополнен на {amount}$", reply_markup=get_admin_keyboard())
-    else:
-        success = await debit_balance(target_id, -amount, None, f"Ручное списание админом {m.from_user.id}")
-        if success:
-            await m.answer(f"✅ С баланса пользователя {target_id} списано {-amount}$", reply_markup=get_admin_keyboard())
         else:
-            bal = await get_user_balance(target_id)
-            await m.answer(f"❌ Недостаточно средств. Текущий баланс: {bal}$", reply_markup=get_admin_keyboard())
-    await state.clear()
+            count = user['daily_orders_count']
+        if count >= user['daily_limit']:
+            return False
+        await conn.execute('UPDATE users SET daily_orders_count = daily_orders_count + 1, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
+        return True
 
-# ---------- Очистка заявок ----------
-@router.callback_query(F.data == "confirm_clear_failed")
-async def ask_clear_failed(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, очистить неуспешные", callback_data="clear_failed_yes")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_no")]
-    ])
-    await cb.message.edit_text("⚠️ Будут удалены все заявки со статусами «в обработке» и «отменена». Оплаченные и выполненные останутся.", reply_markup=kb)
-    await cb.answer()
+async def get_user_daily_info(user_id: int):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+        if not row:
+            return 0, 0
+        today = await conn.fetchval('SELECT CURRENT_DATE')
+        if row['last_order_date'] != today:
+            used = 0
+        else:
+            used = row['daily_orders_count']
+        return row['daily_limit'], used
 
-@router.callback_query(F.data == "confirm_clear_all")
-async def ask_clear_all(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, полная очистка", callback_data="clear_all_yes")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="clear_no")]
-    ])
-    await cb.message.edit_text("⚠️ **Полная очистка**: будут удалены **все** заявки (и у вас, и у покупателей). Это действие необратимо.", reply_markup=kb, parse_mode="Markdown")
-    await cb.answer()
+# ---------- Категории ----------
+async def get_all_categories():
+    rows = await _retry_fetch_best('SELECT id, name, display_name FROM categories ORDER BY id', fetch_all=True)
+    return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
 
-@router.callback_query(F.data == "clear_failed_yes")
-async def clear_failed(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    try:
-        await clear_non_successful_orders()
-        await cb.message.edit_text("✅ Неуспешные заявки удалены.")
-    except Exception as e:
-        print(f"Ошибка очистки: {e}")
-        await cb.message.edit_text("❌ Ошибка при очистке. Попробуйте позже.")
-    await cb.answer()
+async def add_category(name, display_name):
+    async with pool.acquire() as conn:
+        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2)', name, display_name)
 
-@router.callback_query(F.data == "clear_all_yes")
-async def clear_all(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    try:
-        await clear_all_orders()
-        await cb.message.edit_text("✅ Все заявки удалены.")
-    except Exception as e:
-        print(f"Ошибка очистки: {e}")
-        await cb.message.edit_text("❌ Ошибка при очистке. Попробуйте позже.")
-    await cb.answer()
+async def delete_category(cat_id):
+    async with pool.acquire() as conn:
+        await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
+        await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
 
-@router.callback_query(F.data == "clear_no")
-async def clear_no(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    await cb.message.delete()
-    await cb.answer("Очистка отменена")
+async def get_category_by_id(cat_id):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
+        return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
+
+# ---------- Каналы (теперь с выбором лучшего результата) ----------
+async def get_all_channels(category_id=None):
+    if category_id is not None:
+        rows = await _retry_fetch_best(
+            'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
+            category_id, fetch_all=True
+        )
+    else:
+        rows = await _retry_fetch_best(
+            'SELECT id, name, price, subscribers, url, description, category_id FROM channels', fetch_all=True
+        )
+    ch = {}
+    for r in rows:
+        ch[r['id']] = {
+            "name": r['name'],
+            "price": r['price'],
+            "subscribers": r['subscribers'],
+            "url": r['url'],
+            "description": r['description'] or "",
+            "category_id": r['category_id']
+        }
+    return ch
+
+async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO channels (id, name, price, subscribers, url, description, category_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO UPDATE SET name=$2, price=$3, subscribers=$4, url=$5, description=$6, category_id=$7
+        ''', ch_id, name, price, subscribers, url, desc, category_id)
+
+async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category_id=None):
+    async with pool.acquire() as conn:
+        if name is not None:
+            await conn.execute('UPDATE channels SET name = $1 WHERE id = $2', name, ch_id)
+        if price is not None:
+            await conn.execute('UPDATE channels SET price = $1 WHERE id = $2', price, ch_id)
+        if subs is not None:
+            await conn.execute('UPDATE channels SET subscribers = $1 WHERE id = $2', subs, ch_id)
+        if url is not None:
+            await conn.execute('UPDATE channels SET url = $1 WHERE id = $2', url, ch_id)
+        if desc is not None:
+            await conn.execute('UPDATE channels SET description = $1 WHERE id = $2', desc, ch_id)
+        if category_id is not None:
+            await conn.execute('UPDATE channels SET category_id = $1 WHERE id = $2', category_id, ch_id)
+
+async def delete_channel(ch_id):
+    async with pool.acquire() as conn:
+        await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
+
+# ---------- Заказы ----------
+async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
+    async with pool.acquire() as conn:
+        cart_json = json.dumps(cart)
+        oid = await conn.fetchval(
+            'INSERT INTO orders (user_id, username, cart, total, budget, contact, status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+            user_id, username, cart_json, total, budget, contact, status
+        )
+        return oid
+
+async def get_orders(limit=20):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT id, user_id, username, cart, total, budget, contact, status, created_at FROM orders ORDER BY created_at DESC LIMIT $1',
+            limit
+        )
+        return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'],
+                 "cart": json.loads(r['cart']), "total": r['total'], "budget": r['budget'],
+                 "contact": r['contact'], "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+
+async def get_orders_by_user(user_id, limit=5, only_completed=False):
+    async with pool.acquire() as conn:
+        if only_completed:
+            rows = await conn.fetch(
+                'SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 AND status IN ($2, $3) ORDER BY created_at DESC LIMIT $4',
+                user_id, 'оплачена', 'выполнена', limit
+            )
+        else:
+            rows = await conn.fetch(
+                'SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+                user_id, limit
+            )
+        return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']),
+                 "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+
+async def update_order_status(order_id, new_status):
+    async with pool.acquire() as conn:
+        await conn.execute('UPDATE orders SET status = $1 WHERE id = $2', new_status, order_id)
+
+async def get_order_by_id(order_id):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow('SELECT id, user_id, username, total, status, cart FROM orders WHERE id = $1', order_id)
+        if r:
+            return {"id": r['id'], "user_id": r['user_id'], "username": r['username'], "total": r['total'],
+                    "status": r['status'], "cart": json.loads(r['cart'])}
+        return None
+
+# ---------- Очистка заказов ----------
+async def clear_non_successful_orders():
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM transactions WHERE order_id IN (SELECT id FROM orders WHERE status IN ('в обработке', 'отменена'))"
+        )
+        await conn.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
+
+async def clear_all_orders():
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
+        await conn.execute("DELETE FROM orders")
