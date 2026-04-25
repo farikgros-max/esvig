@@ -23,7 +23,15 @@ from config import ADMIN_IDS
 
 router = Router()
 
-# ========== Админ‑панель (полная) ==========
+# ---------- Обработчик текстовой кнопки "Админ‑панель" ----------
+@router.message(F.text == "🔑 Админ‑панель")
+async def admin_panel_msg(m: Message):
+    if m.from_user.id in ADMIN_IDS:
+        await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
+    else:
+        await m.answer("Нет прав")
+
+# ========== Остальная админ‑панель ==========
 @router.callback_query(F.data == "cancel_add_channel")
 async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
@@ -97,7 +105,6 @@ async def admin_del_category(cb: CallbackQuery):
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     ch = await get_all_channels()
-    # Если список пуст, пробуем ещё раз после паузы (база могла не ответить)
     if not ch:
         await asyncio.sleep(1)
         ch = await get_all_channels()
