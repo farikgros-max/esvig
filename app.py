@@ -1163,11 +1163,11 @@ async def startup():
     await bot_instance.set_webhook(
         WEBHOOK_URL,
         drop_pending_updates=True,
-        secret_token=SECRET_TOKEN
+        secret_token=SECRET_TOKEN   # ← обязательно
     )
     print(f"Webhook set to {WEBHOOK_URL}")
     print("Бот готов")
-
+  
 @app.route('/cryptobot', methods=['POST'])
 def cryptobot_webhook():
     if not CRYPTO_BOT_TOKEN:
