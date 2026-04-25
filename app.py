@@ -426,8 +426,7 @@ async def register_handlers(dp: Dispatcher):
         await cb.message.delete()
         await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
 
-    @dp.callback_query(F.data.startswith("remove_"))
-    @dp.callback_query(F.data.startswith("remove_"))
+            @dp.callback_query(F.data.startswith("remove_"))
         async def ask_remove_item(cb: CallbackQuery):
             idx = int(cb.data.split("_")[1])
             cart = get_cart(cb.from_user.id)
@@ -455,7 +454,6 @@ async def register_handlers(dp: Dispatcher):
                 await cb.answer(f"❌ {removed['name']} удалён", show_alert=False)
             else:
                 await cb.answer("Ошибка: товар уже не существует", show_alert=True)
-            # Обновляем отображение корзины
             if not cart:
                 await cb.message.delete()
                 await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
@@ -468,6 +466,21 @@ async def register_handlers(dp: Dispatcher):
                 )
             await cb.answer()
 
+        @dp.callback_query(F.data == "cart_cancel")
+        async def cart_cancel(cb: CallbackQuery):
+            cart = get_cart(cb.from_user.id)
+            if not cart:
+                await cb.message.delete()
+                await cb.message.answer("Корзина пуста", reply_markup=get_main_keyboard(cb.from_user.id))
+                await cb.answer()
+                return
+            total = sum(i['price'] for i in cart)
+            items_str = "\n".join(f"{i+1}. {item['name']} — {item['price']}$" for i,item in enumerate(cart))
+            await cb.message.edit_text(
+                f"🛒 Ваша корзина:\n\n{items_str}\n\nИтого: {total}$",
+                reply_markup=get_cart_keyboard(cb.from_user.id)
+            )
+            await cb.answer()
         @dp.callback_query(F.data == "cart_cancel")
         async def cart_cancel(cb: CallbackQuery):
             cart = get_cart(cb.from_user.id)
