@@ -1161,7 +1161,9 @@ dp_instance = Dispatcher(storage=MemoryStorage())
 async def startup():
     await init_db()
     await register_handlers(dp_instance)
-    print("Бот готов (Long Polling)")
+    # Удаляем вебхук, чтобы освободить очередь обновлений
+    await bot_instance.delete_webhook(drop_pending_updates=True)
+    print("Вебхук удалён, бот готов (Long Polling)")
 
 # ---------- Платёжные вебхуки (без изменений, но используем asyncio.run) ----------
 @app.route('/cryptobot', methods=['POST'])
@@ -1225,10 +1227,8 @@ def xrocket_webhook():
 
 # ---------- Запуск ----------
 if __name__ == "__main__":
-    # Запускаем БД и бота (Long Polling)
     asyncio.run(startup())
-    # В отдельном потоке запускаем Flask (для платёжных вебхуков)
     import threading
     threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': int(os.environ.get("PORT", 5000))}).start()
-    # Запускаем бесконечный опрос Telegram (это основной поток)
+    asyncio.run(dp_instance.start_polling(bot_instance, skip_updates=True))
     asyncio.run(dp_instance.start_polling(bot_instance, skip_updates=True))
