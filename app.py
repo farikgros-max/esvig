@@ -589,15 +589,16 @@ async def register_handlers(dp: Dispatcher):
                 "currency": "USDT",
                 "description": f"Пополнение баланса user_id:{m.from_user.id}",
                 "numPayments": 1,
-                "expiredIn": 3600  # счёт живёт 1 час
+                "expiredIn": 3600
             }
             try:
                 r = requests.post(url, json=payload, headers=headers, timeout=10)
-                print(f"XRocket response: {r.status_code} {r.text}")  # для отладки, потом можно убрать
                 data_resp = r.json()
-                # В документации XRocket успешный ответ может содержать invoiceUrl или pay_url
-                invoice_url = data_resp.get("invoiceUrl") or data_resp.get("pay_url")
-                if invoice_url:
+                # DEBUG (можно оставить, не мешает)
+                print(f"XRocket response: {r.status_code} {r.text}")
+                if data_resp.get("success"):
+                    # Ссылка на оплату находится в data.link
+                    invoice_url = data_resp["data"]["link"]
                     kb = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
                         [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
