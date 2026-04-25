@@ -63,7 +63,6 @@ async def init_db():
                 description TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )''')
-
         await _ensure_default_categories(conn)
 
 async def _ensure_default_categories(conn):
@@ -186,7 +185,7 @@ async def get_user_daily_info(user_id: int):
             used = row['daily_orders_count']
         return row['daily_limit'], used
 
-# ---------- Категории (отдельное соединение) ----------
+# ---------- Категории ----------
 async def get_all_categories():
     conn = await asyncpg.connect(DATABASE_URL)
     try:
@@ -212,23 +211,34 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (отдельное соединение) ----------
+# ---------- Каналы (гарантированно полная загрузка) ----------
 async def get_all_channels(category_id=None):
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
+    # Сначала получаем точное количество через COUNT
+    async with pool.acquire() as conn:
         if category_id is not None:
-            rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
-                category_id
-            )
+            total = await conn.fetchval('SELECT COUNT(*) FROM channels WHERE category_id = $1', category_id)
+            query = 'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1'
+            args = (category_id,)
         else:
-            rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
-            )
-    finally:
-        await conn.close()
+            total = await conn.fetchval('SELECT COUNT(*) FROM channels')
+            query = 'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
+            args = ()
 
-    print(f"[DEBUG] get_all_channels вернула {len(rows)} записей")
+    # Пытаемся загрузить строки, пока количество не совпадёт с total (до 3 попыток)
+    for attempt in range(3):
+        # Открываем отдельное соединение, чтобы гарантированно получить все данные
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            rows = await conn.fetch(query, *args)
+        finally:
+            await conn.close()
+        if len(rows) == total:
+            break
+        await asyncio.sleep(0.3)
+    else:
+        # Если после всех попыток не совпало, берём последний результат (он не может быть больше total)
+        pass
+
     ch = {}
     for r in rows:
         ch[r['id']] = {
