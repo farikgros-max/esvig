@@ -6,39 +6,37 @@ import asyncio
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
 
-# ---------- Кеш каналов ----------
+# ---------- Кеш каналов (ленивая загрузка) ----------
 _channels_cache = {}
+_cache_loaded = False
 
 async def load_channels_cache():
-    """Загружает все каналы из БД в глобальный кеш с повторными попытками."""
-    global _channels_cache
-    # Даём пулу время на создание
-    await asyncio.sleep(1)
-    for attempt in range(5):
+    """Загружает кеш каналов в фоне с повторными попытками."""
+    global _channels_cache, _cache_loaded
+    for attempt in range(10):
         try:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
                 )
-            if rows:
-                ch = {}
-                for r in rows:
-                    ch[r['id']] = {
-                        "name": r['name'],
-                        "price": r['price'],
-                        "subscribers": r['subscribers'],
-                        "url": r['url'],
-                        "description": r['description'] or "",
-                        "category_id": r['category_id']
-                    }
-                _channels_cache = ch
-                print(f"[CACHE] Загружено каналов: {len(ch)}")
-                return
+            ch = {}
+            for r in rows:
+                ch[r['id']] = {
+                    "name": r['name'],
+                    "price": r['price'],
+                    "subscribers": r['subscribers'],
+                    "url": r['url'],
+                    "description": r['description'] or "",
+                    "category_id": r['category_id']
+                }
+            _channels_cache = ch
+            _cache_loaded = True
+            print(f"[CACHE] Успешно загружено каналов: {len(ch)}")
+            return
         except Exception as e:
             print(f"[CACHE] Ошибка загрузки (попытка {attempt+1}): {e}")
-            await asyncio.sleep(1)
-    # Если не удалось, оставляем кеш пустым
-    print("[CACHE] Не удалось загрузить каналы после 5 попыток")
+            await asyncio.sleep(2)
+    print("[CACHE] Кеш не загружен после 10 попыток, будет использоваться прямой запрос")
 
 # ---------- Инициализация БД ----------
 async def init_db():
@@ -99,8 +97,8 @@ async def init_db():
             )''')
         await _ensure_default_categories(conn)
 
-    # Загружаем кеш после того, как пул точно готов
-    await load_channels_cache()
+    # Запускаем фоновую загрузку кеша (не ждём, чтобы бот стартовал быстро)
+    asyncio.create_task(load_channels_cache())
 
 async def _ensure_default_categories(conn):
     exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
@@ -241,18 +239,53 @@ async def delete_category(cat_id):
         async with conn.transaction():
             await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
             await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
-    await load_channels_cache()
+    # Обновляем кеш после изменения категорий
+    if _cache_loaded:
+        asyncio.create_task(load_channels_cache())
 
 async def get_category_by_id(cat_id):
     async with pool.acquire() as conn:
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (используется кеш) ----------
+# ---------- Каналы (кеш + fallback) ----------
+async def _fetch_channels_direct():
+    """Прямой запрос каналов из БД (используется, если кеш не готов)."""
+    for attempt in range(3):
+        try:
+            async with pool.acquire() as conn:
+                total = await conn.fetchval('SELECT COUNT(*) FROM channels')
+                if total == 0:
+                    return {}
+                rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
+                if len(rows) == total:
+                    break
+        except Exception as e:
+            print(f"[DB] Прямой запрос каналов (попытка {attempt+1}): {e}")
+            await asyncio.sleep(0.5)
+    ch = {}
+    for r in rows:
+        ch[r['id']] = {
+            "name": r['name'],
+            "price": r['price'],
+            "subscribers": r['subscribers'],
+            "url": r['url'],
+            "description": r['description'] or "",
+            "category_id": r['category_id']
+        }
+    return ch
+
 async def get_all_channels(category_id=None):
+    # Если кеш загружен, используем его
+    if _cache_loaded:
+        if category_id is not None:
+            return {k: v for k, v in _channels_cache.items() if v.get('category_id') == category_id}
+        return _channels_cache
+    # Иначе делаем прямой запрос (fallback)
+    ch = await _fetch_channels_direct()
     if category_id is not None:
-        return {k: v for k, v in _channels_cache.items() if v.get('category_id') == category_id}
-    return _channels_cache
+        return {k: v for k, v in ch.items() if v.get('category_id') == category_id}
+    return ch
 
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
@@ -261,7 +294,8 @@ async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (id) DO UPDATE SET name=$2, price=$3, subscribers=$4, url=$5, description=$6, category_id=$7
         ''', ch_id, name, price, subscribers, url, desc, category_id)
-    await load_channels_cache()
+    if _cache_loaded:
+        asyncio.create_task(load_channels_cache())
 
 async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category_id=None):
     async with pool.acquire() as conn:
@@ -277,12 +311,14 @@ async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc
             await conn.execute('UPDATE channels SET description = $1 WHERE id = $2', desc, ch_id)
         if category_id is not None:
             await conn.execute('UPDATE channels SET category_id = $1 WHERE id = $2', category_id, ch_id)
-    await load_channels_cache()
+    if _cache_loaded:
+        asyncio.create_task(load_channels_cache())
 
 async def delete_channel(ch_id):
     async with pool.acquire() as conn:
         await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
-    await load_channels_cache()
+    if _cache_loaded:
+        asyncio.create_task(load_channels_cache())
 
 # ---------- Заказы ----------
 async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
