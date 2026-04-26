@@ -65,14 +65,14 @@ async def init_db():
         if count == 0:
             await conn.executemany("""
                 INSERT INTO categories (name, display_name)
-                VALUES ($1, $2)
+                VALUES ($1,$2)
             """, [
                 ("news", "Новостные"),
                 ("trading", "Торговые"),
                 ("analytics", "Аналитика"),
                 ("nft", "NFT"),
                 ("memes", "Мемы"),
-                ("defi", "DeFi")
+                ("defi", "DeFi"),
             ])
 
 
@@ -86,8 +86,8 @@ async def get_or_create_user(user_id: int, username: str = None):
 
         if not user:
             await conn.execute("""
-                INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date)
-                VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)
+                INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count)
+                VALUES ($1,$2,0,3,0)
             """, user_id, username)
 
             return {
@@ -112,14 +112,13 @@ async def get_user_balance(user_id: int):
 async def update_user_balance(user_id: int, amount: int, description: str = ""):
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (user_id, balance)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id)
-            DO UPDATE SET balance = users.balance + $2
-        """, user_id, amount)
+            UPDATE users
+            SET balance = balance + $1
+            WHERE user_id=$2
+        """, amount, user_id)
 
 
-async def debit_balance(user_id: int, amount: int, order_id: int, description=""):
+async def debit_balance(user_id: int, amount: int, order_id: int = None, description: str = ""):
     async with pool.acquire() as conn:
         balance = await conn.fetchval(
             "SELECT balance FROM users WHERE user_id=$1",
@@ -136,6 +135,15 @@ async def debit_balance(user_id: int, amount: int, order_id: int, description=""
         """, amount, user_id)
 
         return True
+
+
+async def return_balance(user_id: int, amount: int, order_id: int = None, description: str = ""):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE users
+            SET balance = balance + $1
+            WHERE user_id=$2
+        """, amount, user_id)
 
 
 # ================= DAILY LIMIT =================
@@ -288,5 +296,5 @@ async def get_orders_by_user(user_id: int, limit: int = 5):
         ]
 
 
-# ================= COMPAT (страховка от старых импортов) =================
+# ================= COMPAT =================
 update_balance = update_user_balance
