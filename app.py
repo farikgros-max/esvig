@@ -9,8 +9,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import (
-    BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN,
-    XROCKET_API_KEY, PORT
+    BOT_TOKEN, ADMIN_IDS,
+    CRYPTO_BOT_TOKEN,
+    XROCKET_API_KEY
 )
 
 from database import init_db
@@ -23,7 +24,7 @@ from handlers.profile import router as profile_router
 from handlers.admin import router as admin_router
 from handlers.info import router as info_router
 
-# middleware
+# middlewares
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
 
 
@@ -33,6 +34,7 @@ logging.basicConfig(
     level=logging.ERROR,
     format="%(asctime)s %(levelname)s:%(message)s"
 )
+
 
 # ================= BOT =================
 bot = Bot(token=BOT_TOKEN)
@@ -91,16 +93,13 @@ async def cryptobot_handler(request):
 
                 try:
                     await bot.send_message(user_id, f"✅ Баланс пополнен на {amount}$")
-                except:
+                except Exception:
                     pass
 
                 for admin in ADMIN_IDS:
                     try:
-                        await bot.send_message(
-                            admin,
-                            f"💰 Пополнение {amount}$ от пользователя {user_id}"
-                        )
-                    except:
+                        await bot.send_message(admin, f"💰 Пополнение {amount}$ от {user_id}")
+                    except Exception:
                         pass
 
     except Exception as e:
@@ -136,16 +135,13 @@ async def xrocket_handler(request):
 
                 try:
                     await bot.send_message(user_id, f"✅ Баланс пополнен на {amount}$")
-                except:
+                except Exception:
                     pass
 
                 for admin in ADMIN_IDS:
                     try:
-                        await bot.send_message(
-                            admin,
-                            f"💰 Пополнение {amount}$ от пользователя {user_id}"
-                        )
-                    except:
+                        await bot.send_message(admin, f"💰 Пополнение {amount}$ от {user_id}")
+                    except Exception:
                         pass
 
     except Exception as e:
@@ -165,10 +161,12 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
 
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
+    port = int(os.getenv("PORT", 8080))
+
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🌐 Webhooks запущены")
+    print(f"🌐 Webhook сервер запущен на порту {port}")
 
     await dp.start_polling(bot, skip_updates=True)
 
