@@ -120,12 +120,12 @@ async def update_user_balance(user_id: int, amount: int, description: str = ""):
 
 async def debit_balance(user_id: int, amount: int, order_id: int = None, description: str = ""):
     async with pool.acquire() as conn:
-        balance = await conn.fetchval(
+        bal = await conn.fetchval(
             "SELECT balance FROM users WHERE user_id=$1",
             user_id
         )
 
-        if balance is None or balance < amount:
+        if bal is None or bal < amount:
             return False
 
         await conn.execute("""
@@ -146,7 +146,7 @@ async def return_balance(user_id: int, amount: int, order_id: int = None, descri
         """, amount, user_id)
 
 
-# ================= DAILY LIMIT =================
+# ================= DAILY =================
 async def check_daily_order_limit(user_id: int):
     async with pool.acquire() as conn:
         user = await conn.fetchrow("""
@@ -243,19 +243,48 @@ async def get_categories():
 get_all_categories = get_categories
 
 
+# ================= CHANNEL CRUD (ADMIN FIX) =================
+async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO channels (id, name, price, subscribers, url, description, category_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (id)
+            DO UPDATE SET
+                name=$2,
+                price=$3,
+                subscribers=$4,
+                url=$5,
+                description=$6,
+                category_id=$7
+        """, ch_id, name, price, subscribers, url, desc, category_id)
+
+
+async def delete_channel(ch_id):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM channels WHERE id=$1", ch_id)
+
+
+async def update_channel(ch_id, **kwargs):
+    async with pool.acquire() as conn:
+        for k, v in kwargs.items():
+            await conn.execute(
+                f"UPDATE channels SET {k}=$1 WHERE id=$2",
+                v, ch_id
+            )
+
+
 # ================= ORDERS =================
 async def save_order(user_id, username, cart, total, budget, contact, status):
     async with pool.acquire() as conn:
-        order_id = await conn.fetchval("""
+        return await conn.fetchval("""
             INSERT INTO orders (user_id, username, cart, total, budget, contact, status)
             VALUES ($1,$2,$3,$4,$5,$6,$7)
             RETURNING id
         """, user_id, username, json.dumps(cart), total, budget, contact, status)
 
-        return order_id
 
-
-async def update_order_status(order_id: int, status: str):
+async def update_order_status(order_id, status):
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE orders SET status=$1 WHERE id=$2",
@@ -263,19 +292,18 @@ async def update_order_status(order_id: int, status: str):
         )
 
 
-async def get_order_by_id(order_id: int):
+async def get_order_by_id(order_id):
     async with pool.acquire() as conn:
         r = await conn.fetchrow("SELECT * FROM orders WHERE id=$1", order_id)
-
         if not r:
             return None
 
-        data = dict(r)
-        data["cart"] = json.loads(data["cart"])
-        return data
+        d = dict(r)
+        d["cart"] = json.loads(d["cart"])
+        return d
 
 
-async def get_orders_by_user(user_id: int, limit: int = 5):
+async def get_orders_by_user(user_id, limit=5):
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT * FROM orders
@@ -289,8 +317,7 @@ async def get_orders_by_user(user_id: int, limit: int = 5):
                 "id": r["id"],
                 "total": r["total"],
                 "status": r["status"],
-                "cart": json.loads(r["cart"]),
-                "created_at": str(r["created_at"])
+                "cart": json.loads(r["cart"])
             }
             for r in rows
         ]
