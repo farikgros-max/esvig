@@ -1,6 +1,7 @@
 import asyncpg
 import os
 import json
+import asyncio
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
@@ -47,7 +48,6 @@ async def init_db():
         )
         """)
 
-        # дефолт категории
         count = await conn.fetchval("SELECT COUNT(*) FROM categories")
         if count == 0:
             await conn.executemany("""
@@ -63,14 +63,100 @@ async def init_db():
             ])
 
 
-# ================= CATEGORIES =================
-async def get_categories():
+# ================= USERS =================
+async def get_or_create_user(user_id: int, username: str = None):
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM categories ORDER BY id")
-        return [
-            {"id": r["id"], "name": r["name"], "display_name": r["display_name"]}
-            for r in rows
-        ]
+        user = await conn.fetchrow(
+            "SELECT * FROM users WHERE user_id=$1",
+            user_id
+        )
+
+        if not user:
+            await conn.execute("""
+                INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date)
+                VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)
+            """, user_id, username)
+
+            return {
+                "user_id": user_id,
+                "username": username,
+                "balance": 0,
+                "daily_limit": 3,
+                "daily_orders_count": 0
+            }
+
+        if username and user["username"] != username:
+            await conn.execute(
+                "UPDATE users SET username=$1 WHERE user_id=$2",
+                username, user_id
+            )
+
+        return dict(user)
+
+
+async def get_user_balance(user_id: int):
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT balance FROM users WHERE user_id=$1",
+            user_id
+        ) or 0
+
+
+async def update_user_balance(user_id: int, amount: int, description: str = ""):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, balance)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id)
+            DO UPDATE SET balance = users.balance + $2
+        """, user_id, amount)
+
+
+# ================= DAILY LIMIT =================
+async def get_user_daily_info(user_id: int):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("""
+            SELECT daily_limit, daily_orders_count, last_order_date
+            FROM users WHERE user_id=$1
+        """, user_id)
+
+        if not r:
+            return 0, 0
+
+        return r["daily_limit"], r["daily_orders_count"]
+
+
+async def check_daily_order_limit(user_id: int):
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow("""
+            SELECT daily_limit, daily_orders_count, last_order_date
+            FROM users WHERE user_id=$1
+        """, user_id)
+
+        if not user:
+            return False
+
+        today = await conn.fetchval("SELECT CURRENT_DATE")
+
+        if user["last_order_date"] != today:
+            await conn.execute("""
+                UPDATE users
+                SET daily_orders_count=0, last_order_date=CURRENT_DATE
+                WHERE user_id=$1
+            """, user_id)
+            return True
+
+        if user["daily_orders_count"] >= user["daily_limit"]:
+            return False
+
+        await conn.execute("""
+            UPDATE users
+            SET daily_orders_count = daily_orders_count + 1,
+                last_order_date = CURRENT_DATE
+            WHERE user_id=$1
+        """, user_id)
+
+        return True
 
 
 # ================= CHANNELS =================
@@ -98,6 +184,10 @@ async def get_channels(category_id=None):
         }
 
 
+async def get_all_channels(category_id=None):
+    return await get_channels(category_id)
+
+
 async def get_channel(channel_id: str):
     async with pool.acquire() as conn:
         r = await conn.fetchrow(
@@ -108,51 +198,90 @@ async def get_channel(channel_id: str):
         if not r:
             return None
 
-        return {
-            "id": r["id"],
-            "name": r["name"],
-            "price": r["price"],
-            "subscribers": r["subscribers"],
-            "url": r["url"],
-            "description": r["description"] or "",
-            "category_id": r["category_id"]
-        }
+        return dict(r)
 
 
-# ================= USERS =================
-async def get_user_balance(user_id: int):
+# ================= CATEGORIES =================
+async def get_categories():
     async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT balance FROM users WHERE user_id=$1",
-            user_id
-        ) or 0
+        rows = await conn.fetch("SELECT * FROM categories ORDER BY id")
+        return [
+            {"id": r["id"], "name": r["name"], "display_name": r["display_name"]}
+            for r in rows
+        ]
 
 
-async def update_balance(user_id: int, amount: int):
+async def get_all_categories():
+    return await get_categories()
+
+
+# ================= ORDERS =================
+async def save_order(user_id, username, cart, total, budget, contact, status="pending"):
     async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (user_id, balance)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id)
-            DO UPDATE SET balance = users.balance + $2
-        """, user_id, amount)
+        cart_json = json.dumps(cart)
+
+        order_id = await conn.fetchval("""
+            INSERT INTO orders (user_id, username, cart, total, budget, contact, status)
+            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            RETURNING id
+        """, user_id, username, cart_json, total, budget, contact, status)
+
+        return order_id
 
 
-# ================= PROFILE (FIX ERROR) =================
-async def get_user_daily_info(user_id: int):
+async def update_order_status(order_id: int, status: str):
     async with pool.acquire() as conn:
-        r = await conn.fetchrow("""
-            SELECT daily_limit, daily_orders_count, last_order_date
-            FROM users
-            WHERE user_id=$1
-        """, user_id)
+        await conn.execute(
+            "UPDATE orders SET status=$1 WHERE id=$2",
+            status, order_id
+        )
+
+
+async def get_order_by_id(order_id: int):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT * FROM orders WHERE id=$1",
+            order_id
+        )
 
         if not r:
-            return 0, 0
+            return None
 
-        return r["daily_limit"], r["daily_orders_count"]
+        data = dict(r)
+        data["cart"] = json.loads(data["cart"])
+        return data
 
 
-# ================= COMPAT LAYER =================
-get_all_channels = get_channels
-get_all_categories = get_categories
+# ================= BALANCE OPS =================
+async def debit_balance(user_id: int, amount: int, order_id: int, description=""):
+    async with pool.acquire() as conn:
+        balance = await conn.fetchval(
+            "SELECT balance FROM users WHERE user_id=$1 FOR UPDATE",
+            user_id
+        )
+
+        if balance is None or balance < amount:
+            return False
+
+        await conn.execute("""
+            UPDATE users
+            SET balance = balance - $1
+            WHERE user_id=$2
+        """, amount, user_id)
+
+        return True
+
+
+async def return_balance(user_id: int, amount: int, order_id: int, description=""):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE users
+            SET balance = balance + $1
+            WHERE user_id=$2
+        """, amount, user_id)
+
+
+# ================= COMPAT LAYER (ВАЖНО) =================
+get_user_daily_info = get_user_daily_info
+get_all_channels = get_all_channels
+get_all_categories = get_all_categories
