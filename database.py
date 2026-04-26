@@ -187,14 +187,19 @@ async def get_user_daily_info(user_id: int):
 
 # ---------- Категории ----------
 async def get_all_categories():
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
+    for attempt in range(5):
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
+            if rows:
+                return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
+        except Exception:
+            pass
+        await asyncio.sleep(0.3 * (attempt + 1))
+    # В крайнем случае создаём стандартные категории
+    async with pool.acquire() as conn:
+        await _ensure_default_categories(conn)
         rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
-        if not rows:
-            await _ensure_default_categories(conn)
-            rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
-    finally:
-        await conn.close()
     return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
 
 async def add_category(name, display_name):
@@ -212,32 +217,38 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (ВСЕГДА прямое соединение) ----------
+# ---------- Каналы (стабильная загрузка через пул) ----------
 async def get_all_channels(category_id=None):
-    conn = await asyncpg.connect(DATABASE_URL)
-    try:
-        if category_id is not None:
-            rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
-                category_id
-            )
-        else:
-            rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
-            )
-    finally:
-        await conn.close()
-    ch = {}
-    for r in rows:
-        ch[r['id']] = {
-            "name": r['name'],
-            "price": r['price'],
-            "subscribers": r['subscribers'],
-            "url": r['url'],
-            "description": r['description'] or "",
-            "category_id": r['category_id']
-        }
-    return ch
+    for attempt in range(5):
+        try:
+            async with pool.acquire() as conn:
+                if category_id is not None:
+                    total = await conn.fetchval('SELECT COUNT(*) FROM channels WHERE category_id = $1', category_id)
+                    rows = await conn.fetch(
+                        'SELECT id, name, price, subscribers, url, description, category_id FROM channels WHERE category_id = $1',
+                        category_id
+                    )
+                else:
+                    total = await conn.fetchval('SELECT COUNT(*) FROM channels')
+                    rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
+
+                if len(rows) == total:
+                    ch = {}
+                    for r in rows:
+                        ch[r['id']] = {
+                            "name": r['name'],
+                            "price": r['price'],
+                            "subscribers": r['subscribers'],
+                            "url": r['url'],
+                            "description": r['description'] or "",
+                            "category_id": r['category_id']
+                        }
+                    return ch
+        except Exception:
+            pass
+        await asyncio.sleep(0.4 * (attempt + 1))
+    # Если все попытки провалились, возвращаем пустой словарь
+    return {}
 
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
