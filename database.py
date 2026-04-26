@@ -11,32 +11,31 @@ _channels_cache = {}
 _cache_valid = False
 
 async def _fetch_channels_direct():
-    """Прямой запрос из БД с проверкой COUNT. Возвращает полный словарь каналов."""
     for attempt in range(5):
         try:
             async with pool.acquire() as conn:
                 total = await conn.fetchval('SELECT COUNT(*) FROM channels')
                 if total == 0:
                     return {}
-                rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
+                rows = await conn.fetch(
+                    'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
+                )
                 if len(rows) == total:
                     ch = {}
                     for r in rows:
                         ch[r['id']] = {
-                            "name": r['name'],
-                            "price": r['price'],
-                            "subscribers": r['subscribers'],
-                            "url": r['url'],
-                            "description": r['description'] or "",
-                            "category_id": r['category_id']
+                            "name": r['name'], "price": r['price'], "subscribers": r['subscribers'],
+                            "url": r['url'], "description": r['description'] or "", "category_id": r['category_id']
                         }
                     return ch
         except Exception as e:
             print(f"[DB] Прямой запрос каналов (попытка {attempt+1}): {e}")
         await asyncio.sleep(0.5 * (attempt + 1))
-    # Если не удалось получить полный набор, возвращаем что есть (пустой/неполный)
     try:
         async with pool.acquire() as conn:
+            total = await conn.fetchval('SELECT COUNT(*) FROM channels')
+            if total == 0:
+                return {}
             rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
             ch = {}
             for r in rows:
@@ -49,17 +48,23 @@ async def _fetch_channels_direct():
         return {}
 
 async def invalidate_cache():
-    """Сбрасывает кэш после изменений в таблице channels."""
     global _cache_valid
     _cache_valid = False
 
 async def get_all_channels(category_id=None):
-    """Возвращает каналы: из кэша, если он актуален, иначе загружает и кэширует."""
     global _channels_cache, _cache_valid
     if not _cache_valid:
         _channels_cache = await _fetch_channels_direct()
-        _cache_valid = True
-        print(f"[CACHE] Загружено каналов: {len(_channels_cache)}")
+        if len(_channels_cache) == 0:
+            try:
+                async with pool.acquire() as conn:
+                    total = await conn.fetchval('SELECT COUNT(*) FROM channels')
+                _cache_valid = (total == 0)
+            except Exception:
+                _cache_valid = False
+        else:
+            _cache_valid = True
+        print(f"[CACHE] Загружено каналов: {len(_channels_cache)}, валидность: {_cache_valid}")
     if category_id is not None:
         return {k: v for k, v in _channels_cache.items() if v.get('category_id') == category_id}
     return _channels_cache
