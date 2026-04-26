@@ -10,8 +10,10 @@ pool = None
 _channels_cache = {}
 
 async def load_channels_cache():
-    """Загружает все каналы из БД в глобальный кеш."""
+    """Загружает все каналы из БД в глобальный кеш с повторными попытками."""
     global _channels_cache
+    # Даём пулу время на создание
+    await asyncio.sleep(1)
     for attempt in range(5):
         try:
             async with pool.acquire() as conn:
@@ -34,7 +36,8 @@ async def load_channels_cache():
                 return
         except Exception as e:
             print(f"[CACHE] Ошибка загрузки (попытка {attempt+1}): {e}")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
+    # Если не удалось, оставляем кеш пустым
     print("[CACHE] Не удалось загрузить каналы после 5 попыток")
 
 # ---------- Инициализация БД ----------
@@ -96,7 +99,7 @@ async def init_db():
             )''')
         await _ensure_default_categories(conn)
 
-    # Первичная загрузка кеша
+    # Загружаем кеш после того, как пул точно готов
     await load_channels_cache()
 
 async def _ensure_default_categories(conn):
@@ -238,7 +241,7 @@ async def delete_category(cat_id):
         async with conn.transaction():
             await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
             await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
-    await load_channels_cache()  # обновляем кеш, т.к. могли измениться категории каналов
+    await load_channels_cache()
 
 async def get_category_by_id(cat_id):
     async with pool.acquire() as conn:
@@ -247,7 +250,6 @@ async def get_category_by_id(cat_id):
 
 # ---------- Каналы (используется кеш) ----------
 async def get_all_channels(category_id=None):
-    """Возвращает каналы из кеша. Фильтрация по категории на лету."""
     if category_id is not None:
         return {k: v for k, v in _channels_cache.items() if v.get('category_id') == category_id}
     return _channels_cache
