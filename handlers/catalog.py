@@ -14,7 +14,7 @@ async def catalog_start(m: Message):
     if not cats:
         await m.answer("Категории не найдены")
         return
-    await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard(get_all_categories))
+    await m.answer("Выберите категорию:", reply_markup=await get_categories_keyboard(cats))
 
 @router.callback_query(F.data.startswith("category_select_"))
 async def select_category(cb: CallbackQuery):
@@ -50,7 +50,7 @@ async def back_to_categories(cb: CallbackQuery):
         await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
         await cb.answer()
         return
-    await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard(get_all_categories))
+    await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard(cats))
     await cb.answer()
 
 @router.callback_query(F.data.startswith("view_catalog_page_"))
@@ -75,7 +75,7 @@ async def back_to_catalog(cb: CallbackQuery):
         await cb.message.edit_text("Категории не найдены", reply_markup=get_back_keyboard())
         await cb.answer()
         return
-    await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard(get_all_categories))
+    await cb.message.edit_text("Выберите категорию:", reply_markup=await get_categories_keyboard(cats))
     await cb.answer()
 
 @router.callback_query(F.data == "back_to_main_menu")
