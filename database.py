@@ -146,7 +146,7 @@ async def return_balance(user_id: int, amount: int, order_id: int = None, descri
         """, amount, user_id)
 
 
-# ================= DAILY =================
+# ================= DAILY LIMIT =================
 async def check_daily_order_limit(user_id: int):
     async with pool.acquire() as conn:
         user = await conn.fetchrow("""
@@ -243,7 +243,7 @@ async def get_categories():
 get_all_categories = get_categories
 
 
-# ================= CHANNEL CRUD (ADMIN FIX) =================
+# ================= CHANNEL CRUD =================
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -303,7 +303,19 @@ async def get_order_by_id(order_id):
         return d
 
 
-async def get_orders_by_user(user_id, limit=5):
+async def get_orders(limit: int = 20):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, user_id, username, total, status, created_at
+            FROM orders
+            ORDER BY created_at DESC
+            LIMIT $1
+        """, limit)
+
+        return [dict(r) for r in rows]
+
+
+async def get_orders_by_user(user_id: int, limit=5):
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT * FROM orders
