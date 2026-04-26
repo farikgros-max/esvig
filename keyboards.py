@@ -28,8 +28,7 @@ def get_admin_keyboard():
     ])
 
 # Все остальные функции оставьте без изменений
-async def get_categories_keyboard(get_all_categories):
-    cats = await get_all_categories()
+async def get_categories_keyboard(cats):
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
     rows = []
