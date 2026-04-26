@@ -61,7 +61,6 @@ async def init_db():
         )
         """)
 
-        # default categories
         count = await conn.fetchval("SELECT COUNT(*) FROM categories")
         if count == 0:
             await conn.executemany("""
@@ -139,7 +138,40 @@ async def debit_balance(user_id: int, amount: int, order_id: int, description=""
         return True
 
 
-# ================= DAILY =================
+# ================= DAILY LIMIT =================
+async def check_daily_order_limit(user_id: int):
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow("""
+            SELECT daily_limit, daily_orders_count, last_order_date
+            FROM users WHERE user_id=$1
+        """, user_id)
+
+        if not user:
+            return False
+
+        today = await conn.fetchval("SELECT CURRENT_DATE")
+
+        if user["last_order_date"] != today:
+            await conn.execute("""
+                UPDATE users
+                SET daily_orders_count = 0, last_order_date = CURRENT_DATE
+                WHERE user_id=$1
+            """, user_id)
+            return True
+
+        if user["daily_orders_count"] >= user["daily_limit"]:
+            return False
+
+        await conn.execute("""
+            UPDATE users
+            SET daily_orders_count = daily_orders_count + 1,
+                last_order_date = CURRENT_DATE
+            WHERE user_id=$1
+        """, user_id)
+
+        return True
+
+
 async def get_user_daily_info(user_id: int):
     async with pool.acquire() as conn:
         r = await conn.fetchrow("""
@@ -244,20 +276,17 @@ async def get_orders_by_user(user_id: int, limit: int = 5):
             LIMIT $2
         """, user_id, limit)
 
-        result = []
-        for r in rows:
-            result.append({
+        return [
+            {
                 "id": r["id"],
                 "total": r["total"],
                 "status": r["status"],
                 "cart": json.loads(r["cart"]),
                 "created_at": str(r["created_at"])
-            })
+            }
+            for r in rows
+        ]
 
-        return result
 
-
-# ================= COMPAT =================
-get_user_daily_info = get_user_daily_info
-get_user_balance = get_user_balance
+# ================= COMPAT (страховка от старых импортов) =================
 update_balance = update_user_balance
