@@ -6,37 +6,43 @@ import asyncio
 DATABASE_URL = os.environ.get("DATABASE_URL")
 pool = None
 
-# ---------- Кеш каналов (ленивая загрузка) ----------
+# ---------- Кеш каналов (ленивая загрузка с проверкой на пустоту) ----------
 _channels_cache = {}
 _cache_loaded = False
 
 async def load_channels_cache():
-    """Загружает кеш каналов в фоне с повторными попытками."""
+    """Загружает кеш каналов. Повторяет, пока не получит >0 каналов или не исчерпает попытки."""
     global _channels_cache, _cache_loaded
-    for attempt in range(10):
+    for attempt in range(5):
         try:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
                 )
-            ch = {}
-            for r in rows:
-                ch[r['id']] = {
-                    "name": r['name'],
-                    "price": r['price'],
-                    "subscribers": r['subscribers'],
-                    "url": r['url'],
-                    "description": r['description'] or "",
-                    "category_id": r['category_id']
-                }
-            _channels_cache = ch
-            _cache_loaded = True
-            print(f"[CACHE] Успешно загружено каналов: {len(ch)}")
-            return
+            if rows:
+                ch = {}
+                for r in rows:
+                    ch[r['id']] = {
+                        "name": r['name'],
+                        "price": r['price'],
+                        "subscribers": r['subscribers'],
+                        "url": r['url'],
+                        "description": r['description'] or "",
+                        "category_id": r['category_id']
+                    }
+                _channels_cache = ch
+                _cache_loaded = True
+                print(f"[CACHE] Успешно загружено каналов: {len(ch)}")
+                return
+            else:
+                print(f"[CACHE] Попытка {attempt+1}: каналов 0, ждём...")
+                await asyncio.sleep(2)
         except Exception as e:
             print(f"[CACHE] Ошибка загрузки (попытка {attempt+1}): {e}")
             await asyncio.sleep(2)
-    print("[CACHE] Кеш не загружен после 10 попыток, будет использоваться прямой запрос")
+    # Если все попытки вернули 0, значит каналов действительно нет
+    print("[CACHE] Каналы не обнаружены, кеш остаётся пустым (будет использоваться прямой запрос при необходимости)")
+    _cache_loaded = True  # чтобы не пытаться перезагружать бесконечно, но fallback будет работать
 
 # ---------- Инициализация БД ----------
 async def init_db():
@@ -97,7 +103,7 @@ async def init_db():
             )''')
         await _ensure_default_categories(conn)
 
-    # Запускаем фоновую загрузку кеша (не ждём, чтобы бот стартовал быстро)
+    # Загружаем кеш в фоне (не блокируем запуск)
     asyncio.create_task(load_channels_cache())
 
 async def _ensure_default_categories(conn):
@@ -239,7 +245,6 @@ async def delete_category(cat_id):
         async with conn.transaction():
             await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
             await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
-    # Обновляем кеш после изменения категорий
     if _cache_loaded:
         asyncio.create_task(load_channels_cache())
 
@@ -248,9 +253,9 @@ async def get_category_by_id(cat_id):
         r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
         return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (кеш + fallback) ----------
+# ---------- Каналы (кеш с fallback) ----------
 async def _fetch_channels_direct():
-    """Прямой запрос каналов из БД (используется, если кеш не готов)."""
+    """Прямой запрос каналов из БД с контролем COUNT."""
     for attempt in range(3):
         try:
             async with pool.acquire() as conn:
@@ -276,12 +281,13 @@ async def _fetch_channels_direct():
     return ch
 
 async def get_all_channels(category_id=None):
-    # Если кеш загружен, используем его
-    if _cache_loaded:
+    """Возвращает каналы: из кеша, если он загружен и не пуст, иначе прямой запрос."""
+    # Если кеш готов и не пуст – используем его
+    if _cache_loaded and _channels_cache:
         if category_id is not None:
             return {k: v for k, v in _channels_cache.items() if v.get('category_id') == category_id}
         return _channels_cache
-    # Иначе делаем прямой запрос (fallback)
+    # Иначе делаем прямой запрос (надёжный fallback)
     ch = await _fetch_channels_direct()
     if category_id is not None:
         return {k: v for k, v in ch.items() if v.get('category_id') == category_id}
