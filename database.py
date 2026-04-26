@@ -1,10 +1,8 @@
 import sqlite3
-import asyncio
 from datetime import datetime, date
 
 DB_PATH = "bot.db"
 
-# ---------------- DB CORE ----------------
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
@@ -12,11 +10,12 @@ def _connect():
     return conn
 
 
+# ---------------- INIT ----------------
+
 async def init_db():
     conn = _connect()
     cur = conn.cursor()
 
-    # USERS
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -28,7 +27,13 @@ async def init_db():
     )
     """)
 
-    # CHANNELS
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT
+    )
+    """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS channels (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,15 +46,6 @@ async def init_db():
     )
     """)
 
-    # CATEGORIES
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS categories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT
-    )
-    """)
-
-    # ORDERS
     cur.execute("""
     CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,24 +60,13 @@ async def init_db():
     )
     """)
 
-    # BALANCE LOGS
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS balance_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        amount REAL,
-        description TEXT,
-        created_at TEXT
-    )
-    """)
-
     conn.commit()
     conn.close()
 
 
 # ---------------- USERS ----------------
 
-async def get_or_create_user(user_id: int, username: str = None):
+async def get_or_create_user(user_id, username=None):
     conn = _connect()
     cur = conn.cursor()
 
@@ -102,7 +87,7 @@ async def get_or_create_user(user_id: int, username: str = None):
     return dict(user)
 
 
-async def get_user_balance(user_id: int):
+async def get_user_balance(user_id):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
@@ -111,7 +96,7 @@ async def get_user_balance(user_id: int):
     return row["balance"] if row else 0
 
 
-async def update_user_balance(user_id: int, amount: float):
+async def update_user_balance(user_id, amount):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
@@ -119,7 +104,7 @@ async def update_user_balance(user_id: int, amount: float):
     conn.close()
 
 
-async def debit_balance(user_id: int, amount: float, order_id: int = None, description: str = ""):
+async def debit_balance(user_id, amount, description=""):
     conn = _connect()
     cur = conn.cursor()
 
@@ -132,101 +117,38 @@ async def debit_balance(user_id: int, amount: float, order_id: int = None, descr
 
     cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, user_id))
 
-    cur.execute("""
-        INSERT INTO balance_logs (user_id, amount, description, created_at)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, -amount, description, str(datetime.now())))
-
     conn.commit()
     conn.close()
     return True
 
 
-# ---------------- ORDERS ----------------
+# ---------------- LIMIT ----------------
 
-async def save_order(user_id, username, items, total, budget, contact, status="pending"):
+async def check_daily_order_limit(user_id):
     conn = _connect()
     cur = conn.cursor()
 
-    cur.execute("""
-        INSERT INTO orders (user_id, username, items, total, budget, contact, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        username,
-        str(items),
-        total,
-        budget,
-        contact,
-        status,
-        str(datetime.now())
-    ))
+    cur.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    u = cur.fetchone()
 
-    conn.commit()
-    order_id = cur.lastrowid
-    conn.close()
-    return order_id
-
-
-async def get_orders_by_user(user_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-async def get_order_by_id(order_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE id=?", (order_id,))
-    row = cur.fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-async def update_order_status(order_id: int, status: str):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
-    conn.commit()
-    conn.close()
-
-
-async def return_balance(user_id: int, amount: float):
-    await update_user_balance(user_id, amount)
-
-
-# ---------------- DAILY LIMIT ----------------
-
-async def check_daily_order_limit(user_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-
-    cur.execute("SELECT orders_today, last_order_date FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-
-    if not row:
+    if not u:
         conn.close()
         return True
 
     today = str(date.today())
 
-    if row["last_order_date"] != today:
+    if u["last_order_date"] != today:
         cur.execute("""
-            UPDATE users
-            SET orders_today = 0,
-                last_order_date = ?
+            UPDATE users SET orders_today=0, last_order_date=?
             WHERE user_id=?
         """, (today, user_id))
         conn.commit()
 
-    cur.execute("SELECT daily_limit, orders_today FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
+    cur.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    u = cur.fetchone()
 
     conn.close()
-    return row["orders_today"] < row["daily_limit"]
+    return u["orders_today"] < u["daily_limit"]
 
 
 # ---------------- CATEGORIES ----------------
@@ -240,10 +162,10 @@ async def get_all_categories():
     return [dict(r) for r in rows]
 
 
-async def get_category_by_id(cat_id: int):
+async def get_category_by_id(cid):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM categories WHERE id=?", (cat_id,))
+    cur.execute("SELECT * FROM categories WHERE id=?", (cid,))
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -251,7 +173,7 @@ async def get_category_by_id(cat_id: int):
 
 # ---------------- CHANNELS ----------------
 
-async def get_channels(category_id: int = None):
+async def get_channels(category_id=None):
     conn = _connect()
     cur = conn.cursor()
 
@@ -265,11 +187,7 @@ async def get_channels(category_id: int = None):
     return [dict(r) for r in rows]
 
 
-async def get_all_channels(category_id: int = None):
-    return await get_channels(category_id)
-
-
-async def get_channel(channel_id: int):
+async def get_channel(channel_id):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("SELECT * FROM channels WHERE id=?", (channel_id,))
@@ -289,7 +207,7 @@ async def add_channel(category_id, name, url, price, subscribers=0, description=
     conn.close()
 
 
-async def delete_channel(channel_id: int):
+async def delete_channel(channel_id):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("DELETE FROM channels WHERE id=?", (channel_id,))
@@ -297,11 +215,11 @@ async def delete_channel(channel_id: int):
     conn.close()
 
 
-async def update_channel(channel_id: int, **kwargs):
+async def update_channel(channel_id, **kwargs):
     conn = _connect()
     cur = conn.cursor()
 
-    fields = ", ".join([f"{k}=?" for k in kwargs])
+    fields = ",".join([f"{k}=?" for k in kwargs])
     values = list(kwargs.values())
     values.append(channel_id)
 
@@ -311,20 +229,56 @@ async def update_channel(channel_id: int, **kwargs):
     conn.close()
 
 
-# ---------------- ADMIN HELPERS ----------------
+# ---------------- ORDERS ----------------
 
-async def get_orders():
+async def save_order(user_id, username, items, total, budget, contact, status="paid"):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM orders ORDER BY id DESC")
+
+    cur.execute("""
+        INSERT INTO orders (user_id, username, items, total, budget, contact, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (user_id, username, str(items), total, budget, contact, status, str(datetime.now())))
+
+    conn.commit()
+    oid = cur.lastrowid
+    conn.close()
+    return oid
+
+
+async def get_orders_by_user(user_id):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE user_id=?", (user_id,))
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-async def clear_non_successful_orders():
+async def get_order_by_id(oid):
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("DELETE FROM orders WHERE status!='оплачена'")
+    cur.execute("SELECT * FROM orders WHERE id=?", (oid,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+async def update_order_status(order_id, status):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
+    conn.commit()
+    conn.close()
+
+
+async def return_balance(user_id, amount):
+    await update_user_balance(user_id, amount)
+
+
+async def clear_all_orders():
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM orders")
     conn.commit()
     conn.close()
