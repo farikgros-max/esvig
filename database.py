@@ -148,6 +148,11 @@ async def delete_channel(channel_id: str):
 
 
 # ================= USERS =================
+# 🔥 Совместимость со старым кодом
+async def get_or_create_user(user_id: int, username: Optional[str] = None):
+    return await get_user(user_id, username)
+
+
 async def get_user(user_id: int, username: Optional[str] = None):
     async with pool.acquire() as conn:
         user = await conn.fetchrow(
