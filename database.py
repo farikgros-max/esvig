@@ -178,6 +178,11 @@ async def update_balance(user_id: int, amount: int):
         )
 
 
+# 🔥 Совместимость со старым кодом
+async def update_user_balance(user_id: int, amount: int, description: str = None):
+    return await update_balance(user_id, amount)
+
+
 # ================= ORDERS =================
 async def create_order(user_id: int, cart: Dict, total: int):
     async with pool.acquire() as conn:
