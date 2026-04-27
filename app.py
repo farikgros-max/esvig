@@ -21,7 +21,6 @@ from handlers.profile import router as profile_router
 from handlers.admin import router as admin_router
 from handlers.info import router as info_router
 from handlers.referral import router as referral_router
-from handlers.support import router as support_router
 
 logging.basicConfig(
     filename='bot_errors.log',
@@ -43,7 +42,6 @@ async def startup():
     dp_instance.include_router(admin_router)
     dp_instance.include_router(info_router)
     dp_instance.include_router(referral_router)
-    dp_instance.include_router(support_router)
     # Middleware
     dp_instance.message.middleware(SubscriptionMiddleware())
     dp_instance.message.middleware(AntiFloodMiddleware())
@@ -59,7 +57,7 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
-# Платёжные вебхуки
+# Платёжные вебхуки (без изменений)
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
