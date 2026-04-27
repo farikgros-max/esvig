@@ -105,7 +105,6 @@ def get_back_keyboard():
 
 # ---------- Админ-список каналов с выбором категории ----------
 async def get_admin_categories_keyboard(get_all_categories):
-    """Клавиатура выбора категории для админ-списка."""
     cats = await get_all_categories()
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
@@ -160,8 +159,8 @@ def get_admin_orders_keyboard(orders):
     if not orders: return None
     btns = []
     for o in orders:
-        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}.get(o['status'],'⚪')
-        btns.append([InlineKeyboardButton(text=f"{emoji} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
+        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒'}
+        btns.append([InlineKeyboardButton(text=f"{emoji.get(o['status'],'⚪')} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
     btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
@@ -188,6 +187,8 @@ def get_stats_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📈 Топ каналов", callback_data="top_channels"),
          InlineKeyboardButton(text="📥 Экспорт заказов", callback_data="export_orders")],
+        [InlineKeyboardButton(text="👥 Топ покупателей", callback_data="top_buyers"),
+         InlineKeyboardButton(text="📈 Доходы по дням", callback_data="daily_revenue")],
         [InlineKeyboardButton(text="🗑 Очистить неуспешные", callback_data="confirm_clear_failed")],
         [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
