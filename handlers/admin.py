@@ -30,6 +30,7 @@ admin_logger.addHandler(fh)
 
 class AdminSupportStates(StatesGroup):
     waiting_for_broadcast_message = State()
+    waiting_for_broadcast_confirm = State()
 
 # ---------- Вход в админ‑панель ----------
 @router.message(F.text == "🔑 Админ‑панель")
@@ -672,6 +673,8 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
 @router.callback_query(F.data == "cancel_add_channel", MassAddStates.waiting_for_bulk_json)
 @router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_channel_link)
 @router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_price)
+@router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_message)
+@router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_confirm)
 async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
@@ -867,28 +870,50 @@ async def backup_cmd(m: Message):
     except Exception as e:
         await m.answer(f"❌ Ошибка при создании бэкапа: {e}")
 
-# ========== МАССОВАЯ РАССЫЛКА ==========
+# ========== МАССОВАЯ РАССЫЛКА С ПОДТВЕРЖДЕНИЕМ ==========
 @router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/broadcast")
 @router.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(cb_or_msg, state: FSMContext):
     if isinstance(cb_or_msg, CallbackQuery):
         cb = cb_or_msg
-        await cb.message.answer("Введите сообщение для рассылки:")
+        await cb.message.answer("Введите сообщение для рассылки:", reply_markup=cancel_keyboard())
         await cb.answer()
     else:
-        await cb_or_msg.answer("Введите сообщение для рассылки:")
+        await cb_or_msg.answer("Введите сообщение для рассылки:", reply_markup=cancel_keyboard())
     await state.set_state(AdminSupportStates.waiting_for_broadcast_message)
 
 @router.message(AdminSupportStates.waiting_for_broadcast_message)
-async def process_broadcast(m: Message, state: FSMContext):
-    user_ids = await get_all_user_ids()
+async def broadcast_text_received(m: Message, state: FSMContext):
     text = m.text
+    await state.update_data(broadcast_text=text)
+    # Показываем предпросмотр и запрашиваем подтверждение
+    preview = f"Рассылка:\n\n{text}\n\nПодтвердить отправку?"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="broadcast_confirm"),
+         InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")]
+    ])
+    await m.answer(preview, reply_markup=kb)
+    await state.set_state(AdminSupportStates.waiting_for_broadcast_confirm)
+
+@router.callback_query(F.data == "broadcast_confirm", AdminSupportStates.waiting_for_broadcast_confirm)
+async def confirm_broadcast(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    text = data.get('broadcast_text', '')
+    await state.clear()
+    await cb.message.edit_text("⏳ Выполняется рассылка...")
+    user_ids = await get_all_user_ids()
     sent = 0
     for uid in user_ids:
         try:
-            await m.bot.send_message(uid, f"📢 Рассылка:\n\n{text}")
+            await cb.bot.send_message(uid, f"📢 Рассылка:\n\n{text}")
             sent += 1
         except Exception:
             pass
-    await m.answer(f"✅ Рассылка завершена. Отправлено {sent} из {len(user_ids)} пользователям.")
+    await cb.message.edit_text(f"✅ Рассылка завершена. Отправлено {sent} из {len(user_ids)} пользователям.")
+    await cb.answer()
+
+@router.callback_query(F.data == "broadcast_cancel", AdminSupportStates.waiting_for_broadcast_confirm)
+async def cancel_broadcast_inline(cb: CallbackQuery, state: FSMContext):
     await state.clear()
+    await cb.message.edit_text("Рассылка отменена.", reply_markup=get_admin_keyboard())
+    await cb.answer()
