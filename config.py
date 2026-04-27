@@ -12,7 +12,6 @@ ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 if ADMIN_IDS_STR:
     ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()]
 else:
-    # fallback только для локальной разработки
     ADMIN_IDS = [7787223469, 7345960167, 714447317, 8614748084, 8702300149, 8472548724]
 
 CRYPTO_BOT_TOKEN = os.environ.get("CRYPTO_BOT_TOKEN", "")
@@ -27,3 +26,6 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.ra
 
 # ID канала для обязательной подписки
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@esvig_service")
+
+# ID канала для уведомлений о новых заказах (необязательно)
+ORDER_CHANNEL_ID = os.environ.get("ORDER_CHANNEL_ID", "")  # например, "@esvig_orders"
