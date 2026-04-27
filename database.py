@@ -11,12 +11,6 @@ _lock = asyncio.Lock()
 
 _channels_dict = {}
 
-REFERRAL_LEVELS = {
-    1: 4,  # 4% для прямых приглашённых
-    2: 2,  # 2% для приглашённых второго уровня
-    3: 1,  # 1% для третьего уровня
-}
-
 async def get_connection() -> asyncpg.Connection:
     global _conn
     if _conn is None or _conn.is_closed():
@@ -141,7 +135,6 @@ async def init_db():
             is_admin BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-    # Добавляем столбцы, если их нет (миграция)
     try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
     except Exception:
@@ -221,52 +214,56 @@ async def get_user_by_referral_code(code: str):
     conn = await get_connection()
     return await conn.fetchrow('SELECT user_id FROM users WHERE referral_code = $1', code)
 
-async def get_referral_chain(user_id: int) -> list:
-    """Возвращает цепочку пригласителей [inviter, inviter_of_inviter, ...] до 3 уровней."""
-    chain = []
-    current = user_id
-    for _ in range(3):
-        conn = await get_connection()
-        inviter = await conn.fetchval('SELECT inviter_id FROM users WHERE user_id = $1', current)
-        if inviter:
-            chain.append(inviter)
-            current = inviter
-        else:
-            break
-    return chain
+async def get_user_invited_count(user_id: int) -> int:
+    """Сколько человек пригласил данный пользователь (прямые рефералы)."""
+    conn = await get_connection()
+    count = await conn.fetchval('SELECT COUNT(*) FROM users WHERE inviter_id = $1', user_id)
+    return count or 0
+
+def get_referral_level(invited_count: int) -> int:
+    """Определяет уровень по количеству приглашённых."""
+    if invited_count <= 10:
+        return 1
+    elif invited_count <= 50:
+        return 2
+    else:
+        return 3
+
+def get_referral_percent(level: int) -> float:
+    """Возвращает процент бонуса для заданного уровня."""
+    if level == 1:
+        return 1.0
+    elif level == 2:
+        return 2.0
+    elif level == 3:
+        return 3.5
+    return 0.0
 
 async def get_referral_stats(user_id: int):
-    conn = await get_connection()
-    invited = await conn.fetchval('SELECT COUNT(*) FROM users WHERE inviter_id = $1', user_id)
+    """Статистика для реферальной программы."""
+    invited = await get_user_invited_count(user_id)
+    level = get_referral_level(invited)
+    percent = get_referral_percent(level)
+    # Общий заработок с рефералов
     bonuses = await conn.fetchval(
         "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id = $1 AND type = 'реферальный бонус'",
         user_id
-    )
-    # Количество приглашённых по уровням (для отображения)
-    level1 = await conn.fetchval(
-        "SELECT COUNT(*) FROM users u1 WHERE u1.inviter_id = $1", user_id
-    )
-    level2 = await conn.fetchval(
-        """SELECT COUNT(*) FROM users u2
-           WHERE u2.inviter_id IN (SELECT user_id FROM users WHERE inviter_id = $1)""",
-        user_id
-    )
-    level3 = await conn.fetchval(
-        """SELECT COUNT(*) FROM users u3
-           WHERE u3.inviter_id IN (
-               SELECT user_id FROM users WHERE inviter_id IN (
-                   SELECT user_id FROM users WHERE inviter_id = $1
-               )
-           )""",
-        user_id
-    )
+    ) if (conn := await get_connection()) else 0
+    # Прогресс до следующего уровня
+    next_level = level + 1 if level < 3 else None
+    needed = 0
+    if next_level == 2:
+        needed = 11 - invited
+    elif next_level == 3:
+        needed = 51 - invited
+
     return {
         "invited": invited,
-        "bonuses": bonuses,
-        "level1": level1,
-        "level2": level2,
-        "level3": level3,
-        "levels": REFERRAL_LEVELS
+        "level": level,
+        "percent": percent,
+        "bonuses": bonuses or 0,
+        "next_level": next_level,
+        "needed": needed
     }
 
 async def process_referral_bonus(order_id: int, order_total: int):
@@ -275,24 +272,31 @@ async def process_referral_bonus(order_id: int, order_total: int):
     if not order:
         return
     user_id = order['user_id']
-    chain = await get_referral_chain(user_id)
-    for level, inviter_id in enumerate(chain, 1):
-        percent = REFERRAL_LEVELS.get(level, 0)
-        if percent == 0:
-            break
-        bonus = int(order_total * percent / 100)
-        if bonus > 0:
-            async with conn.transaction():
-                await conn.execute(
-                    'UPDATE users SET balance = balance + $1 WHERE user_id = $2',
-                    bonus, inviter_id
-                )
-                await conn.execute(
-                    '''INSERT INTO transactions (user_id, type, amount, order_id, description)
-                       VALUES ($1, 'реферальный бонус', $2, $3, $4)''',
-                    inviter_id, bonus, order_id,
-                    f"Реферальный бонус уровня {level} от заказа #{order_id} пользователя {user_id}"
-                )
+    # Находим прямого пригласителя
+    inviter = await conn.fetchrow('SELECT inviter_id FROM users WHERE user_id = $1', user_id)
+    if not inviter or not inviter['inviter_id']:
+        return
+    inviter_id = inviter['inviter_id']
+    # Считаем, сколько у него приглашённых
+    invited_count = await get_user_invited_count(inviter_id)
+    level = get_referral_level(invited_count)
+    percent = get_referral_percent(level)
+    if percent == 0:
+        return
+    bonus = int(order_total * percent / 100)
+    if bonus <= 0:
+        return
+    async with conn.transaction():
+        await conn.execute(
+            'UPDATE users SET balance = balance + $1 WHERE user_id = $2',
+            bonus, inviter_id
+        )
+        await conn.execute(
+            '''INSERT INTO transactions (user_id, type, amount, order_id, description)
+               VALUES ($1, 'реферальный бонус', $2, $3, $4)''',
+            inviter_id, bonus, order_id,
+            f"Реферальный бонус ({percent}%) от заказа #{order_id} пользователя {user_id}"
+        )
 
 async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
     conn = await get_connection()
