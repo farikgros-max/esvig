@@ -99,6 +99,8 @@ async def init_db():
             daily_limit INTEGER DEFAULT 3,
             daily_orders_count INTEGER DEFAULT 0,
             last_order_date DATE DEFAULT CURRENT_DATE,
+            referral_code TEXT UNIQUE,
+            inviter_id BIGINT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )''')
@@ -112,7 +114,15 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-
+    # Добавляем колонки в существующие таблицы, если их нет
+    try:
+        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
+    except Exception:
+        pass
+    try:
+        await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS inviter_id BIGINT')
+    except Exception:
+        pass
     try:
         await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
     except Exception:
@@ -135,20 +145,66 @@ async def init_db():
 
     await _load_channels_from_db()
 
-# ---------- Пользователи и баланс ----------
-async def get_or_create_user(user_id: int, username: str = None):
+# ---------- Пользователи и баланс (добавлен реферальный код) ----------
+async def get_or_create_user(user_id: int, username: str = None, inviter_id: int = None):
     conn = await get_connection()
     user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
     if not user:
+        # Генерируем уникальный реферальный код
+        code = f"REF{user_id}"
         await conn.execute(
-            'INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date) VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)',
-            user_id, username
+            '''INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date, referral_code, inviter_id)
+               VALUES ($1, $2, 0, 3, 0, CURRENT_DATE, $3, $4)''',
+            user_id, username, code, inviter_id
         )
-        return {'user_id': user_id, 'username': username, 'balance': 0, 'daily_limit': 3, 'daily_orders_count': 0}
+        # Если пригласивший существует, начисляем ему приветственный бонус (опционально)
+        if inviter_id:
+            # Можно начислить бонус или просто зафиксировать
+            pass
+        return {'user_id': user_id, 'username': username, 'balance': 0, 'daily_limit': 3,
+                'daily_orders_count': 0, 'referral_code': code, 'inviter_id': inviter_id}
     if username and user['username'] != username:
         await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
     return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance'],
-            'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count']}
+            'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count'],
+            'referral_code': user['referral_code'], 'inviter_id': user['inviter_id']}
+
+async def get_user_by_referral_code(code: str):
+    conn = await get_connection()
+    return await conn.fetchrow('SELECT user_id FROM users WHERE referral_code = $1', code)
+
+async def get_referral_stats(user_id: int):
+    """Возвращает количество приглашённых и заработанные бонусы."""
+    conn = await get_connection()
+    invited = await conn.fetchval('SELECT COUNT(*) FROM users WHERE inviter_id = $1', user_id)
+    bonuses = await conn.fetchval(
+        "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id = $1 AND type = 'реферальный бонус'",
+        user_id
+    )
+    return {"invited": invited, "bonuses": bonuses}
+
+async def process_referral_bonus(order_id: int, order_total: int):
+    """Начисляет реферальный бонус пригласившему после оплаченного заказа."""
+    conn = await get_connection()
+    order = await conn.fetchrow('SELECT user_id, total FROM orders WHERE id = $1', order_id)
+    if not order:
+        return
+    user_id = order['user_id']
+    inviter = await conn.fetchrow('SELECT inviter_id FROM users WHERE user_id = $1', user_id)
+    if inviter and inviter['inviter_id']:
+        bonus = int(order_total * 0.05)  # 5% от суммы заказа
+        if bonus > 0:
+            async with conn.transaction():
+                await conn.execute(
+                    'UPDATE users SET balance = balance + $1 WHERE user_id = $2',
+                    bonus, inviter['inviter_id']
+                )
+                await conn.execute(
+                    '''INSERT INTO transactions (user_id, type, amount, order_id, description)
+                       VALUES ($1, 'реферальный бонус', $2, $3, $4)''',
+                    inviter['inviter_id'], bonus, order_id,
+                    f"Реферальный бонус от заказа #{order_id} пользователя {user_id}"
+                )
 
 async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
     conn = await get_connection()
@@ -161,11 +217,9 @@ async def update_user_balance(user_id: int, amount: int, description: str = "П�
             "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'пополнение', $2, $3)",
             user_id, amount, description
         )
-    # Автоматически оплачиваем ожидающие заказы после пополнения
     await process_pending_orders(user_id)
 
 async def process_pending_orders(user_id: int):
-    """Пытается оплатить все заказы пользователя со статусом 'ожидает оплаты'."""
     conn = await get_connection()
     pending = await conn.fetch(
         "SELECT id, total FROM orders WHERE user_id = $1 AND status = 'ожидает оплаты' ORDER BY id",
@@ -180,6 +234,8 @@ async def process_pending_orders(user_id: int):
             if success:
                 await update_order_status(order['id'], 'оплачена')
                 balance -= order['total']
+                # Начисляем реферальный бонус после успешной оплаты
+                await process_referral_bonus(order['id'], order['total'])
 
 async def debit_balance(user_id: int, amount: int, order_id: int, description: str = "Списание за заказ"):
     conn = await get_connection()
@@ -291,7 +347,6 @@ async def get_active_channels(category_id=None):
     all_ch = await get_all_channels(category_id)
     return {k: v for k, v in all_ch.items() if v.get('active', True)}
 
-# Алиасы для совместимости
 async def get_channels(category_id=None):
     return await get_all_channels(category_id)
 
