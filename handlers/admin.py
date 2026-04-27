@@ -97,19 +97,26 @@ async def admin_del_category(cb: CallbackQuery):
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов ----------
+# ---------- Список каналов с пагинацией ----------
 @router.callback_query(F.data == "admin_list")
+@router.callback_query(F.data.startswith("admin_list_page_"))
 async def adm_list(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    # Определяем страницу
+    if cb.data == "admin_list":
+        page = 0
+    else:
+        page = int(cb.data.split("_")[-1])
     ch = await get_all_channels()
     if not ch:
         await cb.message.edit_text("❌ Не удалось загрузить каналы. Попробуйте позже.", reply_markup=get_main_keyboard(cb.from_user.id))
         await cb.answer()
         return
-    await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
+    kb, cur, total = get_admin_list_keyboard(ch, page)
+    await cb.message.edit_text(f"📋 Список каналов (страница {cur+1}/{total})", reply_markup=kb)
     await cb.answer()
 
-# ---------- Просмотр канала (добавлена кнопка переключения активности) ----------
+# ---------- Просмотр канала (с кнопкой активности) ----------
 @router.callback_query(F.data.startswith("admin_view_"))
 async def adm_view_chan(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -146,7 +153,6 @@ async def toggle_active_cb(cb: CallbackQuery):
     cid = cb.data.replace("toggle_active_", "")
     new_state = await toggle_channel_active(cid)
     await cb.answer(f"Канал теперь {'активен' if new_state else 'скрыт'}", show_alert=False)
-    # Обновляем то же сообщение
     await adm_view_chan(cb)
 
 # ---------- Редактирование канала ----------
@@ -353,17 +359,80 @@ async def show_logs(m: Message):
     except Exception as e:
         await m.answer(f"Ошибка при чтении логов: {e}")
 
-# ---------- /stats ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/stats")
-async def stats_cmd(m: Message):
+# ---------- Статистика (общая) ----------
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats_cb(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Нет прав", show_alert=True)
+        return
+    conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+    tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
+    stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
+    chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
+    week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
+    await conn.close()
+    status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
+    week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week) if week else ""
+    txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum or 0}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n{status_lines}\n"
+    if week_lines:
+        txt += f"\n📅 Последние 7 дней:\n{week_lines}"
+    await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
+    await cb.answer()
+
+# ---------- Обработчики новых кнопок статистики ----------
+@router.callback_query(F.data == "top_channels")
+async def top_channels_cb(cb: CallbackQuery):
     top = await get_top_channels(10)
     if not top:
-        await m.answer("Нет данных о заказах.")
+        await cb.answer("Нет данных о заказах", show_alert=True)
         return
-    text = "📊 Топ каналов по заказам:\n\n"
+    text = "📈 Топ каналов по заказам:\n\n"
     for i, item in enumerate(top, 1):
         text += f"{i}. {item['name']} — {item['orders']} зак. на {item['total']}$\n"
-    await m.answer(text)
+    await cb.message.edit_text(text, reply_markup=get_stats_keyboard())
+    await cb.answer()
+
+@router.callback_query(F.data == "export_orders")
+async def export_orders_cb(cb: CallbackQuery):
+    # Перенаправляем на функцию экспорта (можно просто вызвать)
+    await export_orders(cb.message)  # передаём объект Message
+    await cb.answer()
+
+# Вспомогательная функция экспорта, чтобы не дублировать код (вызывается из /export и из кнопки)
+async def export_orders(message: Message):
+    from database import get_orders  # уже импортировано, но на всякий случай
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Нет доступа")
+        return
+    await message.answer("⏳ Формирую отчёт...")
+    try:
+        orders = await get_orders(limit=10000)
+        if not orders:
+            await message.answer("Заказов нет.")
+            return
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Заказы ESVIG"
+        headers = ["ID", "User ID", "Username", "Сумма", "Статус", "Дата", "Состав"]
+        ws.append(headers)
+        for o in orders:
+            items = "; ".join([f"{it['name']}({it['price']}$)" for it in o['cart']])
+            ws.append([o['id'], o['user_id'], o['username'], o['total'], o['status'], str(o['created_at']), items])
+        filename = "orders_export.xlsx"
+        wb.save(filename)
+        from aiogram.types import FSInputFile
+        file = FSInputFile(filename)
+        await message.answer_document(file, caption="📋 Все заказы")
+        os.remove(filename)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка экспорта: {e}")
+        logging.error(f"Export error: {e}")
+
+# Команда /export остаётся для совместимости (перенаправляет на ту же функцию)
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/export")
+async def export_cmd(m: Message):
+    await export_orders(m)
 
 # ---------- /update_subs ----------
 @router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/update_subs")
@@ -557,26 +626,6 @@ async def set_st(cb: CallbackQuery):
     except: pass
     ords = await get_orders(20)
     await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
-
-# ---------- Статистика (общая) ----------
-@router.callback_query(F.data == "admin_stats")
-async def admin_stats_cb(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
-        return
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-    tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
-    stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
-    chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
-    week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
-    await conn.close()
-    status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
-    week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week) if week else ""
-    txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum or 0}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n{status_lines}\n"
-    if week_lines:
-        txt += f"\n📅 Последние 7 дней:\n{week_lines}"
-    await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
-    await cb.answer()
 
 # ---------- Ручное изменение баланса ----------
 @router.callback_query(F.data == "admin_balance")
