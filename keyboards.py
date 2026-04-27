@@ -103,7 +103,78 @@ def get_cart_keyboard(cart):
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
 
-# ---------- Профильная клавиатура ----------
+# ---------- Админ-список каналов с выбором категории ----------
+async def get_admin_categories_keyboard(get_all_categories):
+    cats = await get_all_categories()
+    if not cats:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
+    rows = []
+    for i in range(0, len(cats), 2):
+        row = []
+        row.append(InlineKeyboardButton(
+            text=cats[i]['display_name'],
+            callback_data=f"admin_cat_{cats[i]['id']}"
+        ))
+        if i+1 < len(cats):
+            row.append(InlineKeyboardButton(
+                text=cats[i+1]['display_name'],
+                callback_data=f"admin_cat_{cats[i+1]['id']}"
+            ))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def get_admin_list_keyboard(channels_dict, page=0, category_id=None):
+    if not channels_dict:
+        return None, 0, 0
+    items = list(channels_dict.items())
+    tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    if page < 0: page = 0
+    if page >= tot: page = tot - 1
+    start = page * ITEMS_PER_PAGE
+    end = start + ITEMS_PER_PAGE
+    btns = []
+    for cid, inf in items[start:end]:
+        btns.append([InlineKeyboardButton(
+            text=f"{inf['name']} | {inf['price']}$ | {inf['subscribers']} подп.",
+            callback_data=f"admin_view_{cid}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_list_page_{page-1}_{category_id or 'all'}"))
+    if page < tot - 1:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"admin_list_page_{page+1}_{category_id or 'all'}"))
+    if nav: btns.append(nav)
+    btns.append([InlineKeyboardButton(text="🔙 К категориям", callback_data="admin_list_back")])
+    return InlineKeyboardMarkup(inline_keyboard=btns), page, tot
+
+def get_admin_remove_keyboard(channels_dict):
+    if not channels_dict: return None
+    btns = []
+    for cid, inf in channels_dict.items():
+        btns.append([InlineKeyboardButton(text=f"❌ {inf['name']} ({inf['price']}$)", callback_data=f"admin_del_{cid}")])
+    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=btns)
+
+def get_admin_orders_keyboard(orders):
+    if not orders: return None
+    btns = []
+    for o in orders:
+        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒'}
+        btns.append([InlineKeyboardButton(text=f"{emoji.get(o['status'],'⚪')} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
+    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=btns)
+
+def get_edit_channel_keyboard(cid):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Название", callback_data=f"edit_{cid}_name")],
+        [InlineKeyboardButton(text="✏️ Цена", callback_data=f"edit_{cid}_price")],
+        [InlineKeyboardButton(text="✏️ Подписчики", callback_data=f"edit_{cid}_subscribers")],
+        [InlineKeyboardButton(text="✏️ Ссылка", callback_data=f"edit_{cid}_url")],
+        [InlineKeyboardButton(text="✏️ Описание", callback_data=f"edit_{cid}_description")],
+        [InlineKeyboardButton(text="✏️ Категория", callback_data=f"edit_{cid}_category")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_view_{cid}")]
+    ])
+
 def get_profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders")],
@@ -113,4 +184,57 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program")]
     ])
 
-# Остальные клавиатуры без изменений...
+def get_stats_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Топ каналов", callback_data="top_channels"),
+         InlineKeyboardButton(text="📥 Экспорт заказов", callback_data="export_orders")],
+        [InlineKeyboardButton(text="👥 Топ покупателей", callback_data="top_buyers"),
+         InlineKeyboardButton(text="📈 Доходы по дням", callback_data="daily_revenue")],
+        [InlineKeyboardButton(text="🗑 Очистить неуспешные", callback_data="confirm_clear_failed")],
+        [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+    ])
+
+async def get_categories_admin_keyboard(get_all_categories):
+    cats = await get_all_categories()
+    if not cats:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+        ])
+    rows = []
+    for i in range(0, len(cats), 2):
+        row = []
+        row.append(InlineKeyboardButton(text=f"{cats[i]['display_name']} ({cats[i]['name']})", callback_data=f"admin_category_{cats[i]['id']}"))
+        if i+1 < len(cats):
+            row.append(InlineKeyboardButton(text=f"{cats[i+1]['display_name']} ({cats[i+1]['name']})", callback_data=f"admin_category_{cats[i+1]['id']}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def get_category_actions_keyboard(cat_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Удалить категорию", callback_data=f"confirm_delete_category_{cat_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_categories")]
+    ])
+
+def get_confirm_delete_category_keyboard(cat_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"exec_delete_category_{cat_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_categories")]
+    ])
+
+async def get_category_selection_keyboard(get_all_categories, callback_prefix):
+    cats = await get_all_categories()
+    if not cats:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
+    rows = []
+    for i in range(0, len(cats), 2):
+        row = []
+        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"{callback_prefix}_{cats[i]['id']}"))
+        if i+1 < len(cats):
+            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"{callback_prefix}_{cats[i+1]['id']}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
