@@ -49,11 +49,39 @@ async def profile(m: Message):
             left_orders=left_orders,
             daily_limit=daily_limit if daily_limit > 0 else '∞',
             invited=ref_stats['invited'],
-            bonuses=ref_stats['bonuses']
+            referral_bonuses=ref_stats['bonuses']
         )
         await m.answer(txt, reply_markup=get_profile_keyboard())
     except Exception as e:
         await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
+
+# ---------- Реферальная программа (вкладка) ----------
+@router.callback_query(F.data == "referral_program")
+async def referral_program(cb: CallbackQuery):
+    user = await get_or_create_user(cb.from_user.id)
+    code = user.get('referral_code', '')
+    stats = await get_referral_stats(cb.from_user.id)
+    bot = await cb.bot.get_me()
+    link = f"https://t.me/{bot.username}?start=ref_{code}"
+    text = (
+        f"👥 Реферальная программа\n\n"
+        f"🔗 Ваша ссылка:\n{link}\n\n"
+        f"👥 Приглашено всего: {stats['invited']}\n"
+        f"💰 Заработано за всё время: {stats['bonuses']}$\n"
+        f"💳 Доступно к выводу: {user['balance']}$\n\n"
+        "Приглашайте друзей и получайте 5% от их заказов!"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+    ])
+    await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data == "back_to_profile")
+async def back_to_profile(cb: CallbackQuery):
+    # Повторно выводим профиль (без изменений)
+    await profile(cb.message)
+    await cb.answer()
 
 # ---------- История транзакций ----------
 @router.callback_query(F.data == "transaction_history")
