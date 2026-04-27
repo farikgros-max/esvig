@@ -867,66 +867,6 @@ async def backup_cmd(m: Message):
     except Exception as e:
         await m.answer(f"❌ Ошибка при создании бэкапа: {e}")
 
-# ========== ТИКЕТНАЯ СИСТЕМА (АДМИН) ==========
-@router.callback_query(F.data == "admin_tickets")
-async def admin_tickets(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    tickets = await get_tickets('open')
-    if not tickets:
-        await cb.message.edit_text("Нет открытых тикетов.", reply_markup=get_admin_keyboard())
-        await cb.answer()
-        return
-    text = "📋 Открытые тикеты:\n\n"
-    for t in tickets[:10]:
-        text += f"#{t['id']} | {t['username']} | {t['subject']}\n"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📄 Тикет #{t['id']}", callback_data=f"view_ticket_{t['id']}")] for t in tickets[:10]
-    ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
-    await cb.message.edit_text(text, reply_markup=kb)
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("view_ticket_"))
-async def view_ticket(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ticket_id = int(cb.data.split("_")[2])
-    messages = await get_ticket_messages(ticket_id)
-    text = f"📄 Тикет #{ticket_id}\n\n"
-    for msg in messages:
-        author = "Администратор" if msg['is_admin'] else "Пользователь"
-        text += f"{author}: {msg['message']}\n   ({msg['created_at']})\n\n"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Ответить", callback_data=f"reply_ticket_{ticket_id}")],
-        [InlineKeyboardButton(text="🔒 Закрыть", callback_data=f"close_ticket_{ticket_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_tickets")]
-    ])
-    await cb.message.edit_text(text, reply_markup=kb)
-    await cb.answer()
-
-@router.callback_query(F.data.startswith("reply_ticket_"))
-async def reply_ticket(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ticket_id = int(cb.data.split("_")[2])
-    await state.update_data(ticket_id=ticket_id)
-    await cb.message.answer("Введите ваш ответ:")
-    await state.set_state(AdminSupportStates.waiting_for_ticket_reply)
-    await cb.answer()
-
-@router.message(AdminSupportStates.waiting_for_ticket_reply)
-async def process_ticket_reply(m: Message, state: FSMContext):
-    data = await state.get_data()
-    ticket_id = data['ticket_id']
-    await add_ticket_message(ticket_id, m.from_user.id, m.text, is_admin=True)
-    await m.answer("✅ Ответ отправлен.")
-    await state.clear()
-
-@router.callback_query(F.data.startswith("close_ticket_"))
-async def close_ticket_cb(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ticket_id = int(cb.data.split("_")[2])
-    await close_ticket(ticket_id)
-    await cb.answer("Тикет закрыт", False)
-    await admin_tickets(cb)
-
 # ========== МАССОВАЯ РАССЫЛКА ==========
 @router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/broadcast")
 @router.callback_query(F.data == "admin_broadcast")
