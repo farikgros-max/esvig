@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import (BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY,
                     WEBHOOK_URL, SECRET_TOKEN, CHANNEL_ID, ORDER_CHANNEL_ID)
-from database import init_db, update_user_balance
+from database import init_db, update_user_balance, auto_process_orders
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
 
 # Импорт роутеров
@@ -20,7 +20,7 @@ from handlers.cart import router as cart_router
 from handlers.profile import router as profile_router
 from handlers.admin import router as admin_router
 from handlers.info import router as info_router
-from handlers.referral import router as referral_router  # новый
+from handlers.referral import router as referral_router
 
 logging.basicConfig(
     filename='bot_errors.log',
@@ -41,7 +41,7 @@ async def startup():
     dp_instance.include_router(profile_router)
     dp_instance.include_router(admin_router)
     dp_instance.include_router(info_router)
-    dp_instance.include_router(referral_router)   # подключаем реферальный
+    dp_instance.include_router(referral_router)
     # Middleware
     dp_instance.message.middleware(SubscriptionMiddleware())
     dp_instance.message.middleware(AntiFloodMiddleware())
@@ -57,7 +57,7 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
-# Платёжные вебхуки (если нужны)
+# Платёжные вебхуки
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
@@ -114,6 +114,8 @@ async def xrocket_handler(request):
 
 async def main():
     await startup()
+    # Запускаем фоновую задачу для автоматической обработки заказов
+    asyncio.create_task(auto_process_orders(bot_instance))
     aio_app = web.Application()
     aio_app.router.add_post('/cryptobot', cryptobot_handler)
     aio_app.router.add_post('/xrocket', xrocket_handler)
