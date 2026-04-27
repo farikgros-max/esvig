@@ -6,7 +6,7 @@ import requests
 from database import (get_or_create_user, get_user_daily_info, get_orders_by_user,
                       get_user_balance, update_user_balance, debit_balance,
                       get_order_by_id, update_order_status, return_balance,
-                      get_user_transactions)
+                      get_user_transactions, process_pending_orders)
 from states import OrderForm
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
                    CHECK_PAYMENT_MESSAGE)
@@ -187,12 +187,22 @@ async def process_deposit_amount(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "check_payment")
 async def check_payment_handler(cb: CallbackQuery):
-    await cb.message.edit_text(
-        CHECK_PAYMENT_MESSAGE,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
-        ])
-    )
+    # Пытаемся оплатить ожидающие заказы
+    await process_pending_orders(cb.from_user.id)
+    orders = await get_orders_by_user(cb.from_user.id, limit=5)
+    pending = [o for o in orders if o['status'] == 'ожидает оплаты']
+    if pending:
+        await cb.message.edit_text(
+            "У вас есть неоплаченные заказы. Пополните баланс и попробуйте снова.",
+            reply_markup=get_profile_keyboard()
+        )
+    else:
+        await cb.message.edit_text(
+            CHECK_PAYMENT_MESSAGE,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")]
+            ])
+        )
     await cb.answer()
 
 # ---------- Заявки пользователя ----------
@@ -206,11 +216,11 @@ async def my_ords(cb: CallbackQuery):
         return
     txt = "📊 Ваши заявки:\n\n"
     btns = []
-    em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌'}
+    em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒'}
     for o in ords:
         txt += f"🆔 №{o['id']}\n💰 Сумма: {o['total']}$\n📦 Товаров: {len(o['cart'])}\n📌 Статус: {em.get(o['status'],'⚪')} {o['status']}\n🕒 {o['created_at']}\n➖➖➖➖➖\n"
         row = [InlineKeyboardButton(text="📄 Подробнее", callback_data=f"order_details_{o['id']}")]
-        if o['status'] in ('в обработке', 'оплачена'):
+        if o['status'] in ('в обработке', 'оплачена', 'ожидает оплаты'):
             row.append(InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_order_{o['id']}"))
         btns.append(row)
     btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
@@ -236,7 +246,7 @@ async def cancel_order(cb: CallbackQuery):
     if not ordd or ordd['user_id'] != cb.from_user.id:
         await cb.answer("Заявка не найдена или недоступна", True)
         return
-    if ordd['status'] not in ('в обработке', 'оплачена'):
+    if ordd['status'] not in ('в обработке', 'оплачена', 'ожидает оплаты'):
         await cb.answer("Эту заявку уже нельзя отменить", True)
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -253,11 +263,13 @@ async def confirm_cancel(cb: CallbackQuery):
     if not ordd or ordd['user_id'] != cb.from_user.id:
         await cb.answer("Заявка не найдена", True)
         return
-    if ordd['status'] not in ('в обработке', 'оплачена'):
+    if ordd['status'] not in ('в обработке', 'оплачена', 'ожидает оплаты'):
         await cb.answer("Статус изменился, отмена невозможна", True)
         return
     await update_order_status(order_id, 'отменена')
-    await return_balance(ordd['user_id'], ordd['total'], order_id, f"Возврат за отмену заказа #{order_id}")
+    # Если статус был 'оплачена', возвращаем деньги
+    if ordd['status'] == 'оплачена':
+        await return_balance(ordd['user_id'], ordd['total'], order_id, f"Возврат за отмену заказа #{order_id}")
     await cb.answer("Заявка отменена, деньги возвращены на баланс", False)
     for aid in ADMIN_IDS:
         try:
