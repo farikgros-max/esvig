@@ -191,12 +191,7 @@ async def view_channel(cb: CallbackQuery):
     cid = cb.data.replace("channel_view_", "")
 
     ch = await get_channels()
-
-    info = None
-    for c in ch:
-        if str(c["id"]) == cid:
-            info = c
-            break
+    info = ch.get(cid)
 
     if not info:
         await cb.answer("Канал не найден", show_alert=True)
@@ -224,12 +219,7 @@ async def add_to_cart(cb: CallbackQuery):
     cid = cb.data.replace("cart_add_", "")
 
     ch = await get_channels()
-
-    info = None
-    for c in ch:
-        if str(c["id"]) == cid:
-            info = c
-            break
+    info = ch.get(cid)
 
     if not info:
         await cb.answer("Канал не найден", show_alert=True)
