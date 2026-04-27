@@ -6,33 +6,41 @@ from datetime import datetime, timedelta
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
+# ---------- Безопасное подключение с авто-восстановлением ----------
 _conn: asyncpg.Connection = None
 _lock = asyncio.Lock()
-
 _channels_dict = {}
 
 async def get_connection() -> asyncpg.Connection:
+    """Возвращает текущее подключение, пересоздаёт при обрыве."""
     global _conn
     if _conn is None or _conn.is_closed():
         async with _lock:
             if _conn is None or _conn.is_closed():
-                try:
-                    _conn = await asyncpg.connect(DATABASE_URL)
-                    print("[DB] Установлено новое подключение к БД")
-                except Exception as e:
-                    print(f"[DB] Ошибка подключения: {e}")
-                    raise
+                for attempt in range(3):
+                    try:
+                        _conn = await asyncpg.connect(DATABASE_URL)
+                        print("[DB] Установлено новое подключение к БД")
+                        return _conn
+                    except Exception as e:
+                        print(f"[DB] Ошибка подключения (попытка {attempt+1}): {e}")
+                        await asyncio.sleep(2)
+                raise ConnectionError("Не удалось подключиться к БД после 3 попыток")
     return _conn
 
 async def close_db():
     global _conn
     if _conn:
-        await _conn.close()
+        try:
+            await _conn.close()
+        except Exception:
+            pass
         _conn = None
 
+# ---------- Безопасная загрузка каналов в память ----------
 async def _load_channels_from_db():
     global _channels_dict
-    for attempt in range(5):
+    for attempt in range(3):
         try:
             conn = await get_connection()
             rows = await conn.fetch(
@@ -43,10 +51,10 @@ async def _load_channels_from_db():
             ch = {}
             for r in rows:
                 ch[r['id']] = {
-                    "name": r['name'],
-                    "price": r['price'],
-                    "subscribers": r['subscribers'],
-                    "url": r['url'],
+                    "name": r['name'] or "Без названия",
+                    "price": r['price'] or 0,
+                    "subscribers": r['subscribers'] or 0,
+                    "url": r['url'] or "",
                     "description": r['description'] or "",
                     "category_id": r['category_id'],
                     "active": r['active']
@@ -55,13 +63,15 @@ async def _load_channels_from_db():
             print(f"[MEM] Каналы загружены в память: {len(ch)}")
             return
         except Exception as e:
-            print(f"[MEM] Попытка {attempt+1}: {e}")
+            print(f"[MEM] Ошибка загрузки каналов (попытка {attempt+1}): {e}")
             await close_db()
-            await asyncio.sleep(1)
-    print("[MEM] Не удалось загрузить каналы после 5 попыток")
+            await asyncio.sleep(2)
+    # Если все попытки неудачны – оставляем старый кеш
+    print("[MEM] Не удалось обновить кеш каналов, используется предыдущий")
 
 async def init_db():
     conn = await get_connection()
+    # Создание таблиц (без изменений)
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id SERIAL PRIMARY KEY,
@@ -114,6 +124,7 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
+    # Миграции (без изменений)
     try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
     except Exception:
