@@ -7,7 +7,7 @@ from database import (get_or_create_user, get_user_daily_info, get_orders_by_use
                       get_user_balance, update_user_balance, debit_balance,
                       get_order_by_id, update_order_status, return_balance,
                       get_user_transactions, process_pending_orders,
-                      get_referral_stats, save_order)
+                      get_referral_stats, save_order, update_user_referral_code)
 from states import OrderForm, WithdrawStates
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
                    CHECK_PAYMENT_MESSAGE, WITHDRAW_MIN)
@@ -54,11 +54,19 @@ async def profile(m: Message):
     except Exception as e:
         await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
 
-# ---------- Реферальная программа ----------
+# ---------- Реферальная программа (исправлено) ----------
 @router.callback_query(F.data == "referral_program")
 async def referral_program(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
-    code = user.get('referral_code', '')
+    code = user.get('referral_code')
+    # Если код отсутствует (None) – генерируем и сразу сохраняем
+    if not code:
+        code = f"REF{cb.from_user.id}"
+        try:
+            await update_user_referral_code(cb.from_user.id, code)
+            user['referral_code'] = code
+        except Exception as e:
+            print(f"Не удалось обновить referral_code: {e}")
     stats = await get_referral_stats(cb.from_user.id)
     bot = await cb.bot.get_me()
     link = f"https://t.me/{bot.username}?start=ref_{code}"
