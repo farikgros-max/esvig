@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from aiogram import BaseMiddleware
+from bot import bot_instance
 from config import CHANNEL_ID
 
 # ---------- Антифлуд ----------
@@ -27,13 +28,15 @@ async def is_subscribed(bot, user_id: int) -> bool:
 
 class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
-        # Получаем объект бота из data
-        bot = data.get("bot")
-        if hasattr(event, 'from_user') and event.from_user and bot:
-            # Пропускаем команды /start и /export
-            if event.text and (event.text.startswith("/start") or event.text.startswith("/export")):
-                return await handler(event, data)
-            if not await is_subscribed(bot, event.from_user.id):
-                await event.answer("⚠️ Подпишитесь на канал, чтобы пользоваться ботом: /start")
-                return
-        return await handler(event, data)
+        try:
+            bot = data.get("bot")
+            if hasattr(event, 'from_user') and event.from_user and bot:
+                if event.text and (event.text.startswith("/start") or event.text.startswith("/export") or event.text.startswith("/ping")):
+                    return await handler(event, data)
+                if not await is_subscribed(bot, event.from_user.id):
+                    await event.answer("⚠️ Подпишитесь на канал, чтобы пользоваться ботом: /start")
+                    return
+            return await handler(event, data)
+        except Exception:
+            # При любом сбое пропускаем событие, чтобы не блокировать бота
+            return await handler(event, data)
