@@ -8,7 +8,8 @@ def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")],
+        [KeyboardButton(text="📝 Поддержка")]
     ]
     if user_id in ADMIN_IDS:
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
@@ -25,6 +26,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
+        [InlineKeyboardButton(text="🎫 Тикеты", callback_data="admin_tickets"),
+         InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")]
     ])
 
 async def get_categories_keyboard(get_all_categories):
@@ -103,7 +106,6 @@ def get_cart_keyboard(cart):
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
 
-# ---------- Админ-список каналов с выбором категории ----------
 async def get_admin_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
     if not cats:
@@ -159,7 +161,7 @@ def get_admin_orders_keyboard(orders):
     if not orders: return None
     btns = []
     for o in orders:
-        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒'}
+        emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒', 'вывод':'💰'}
         btns.append([InlineKeyboardButton(text=f"{emoji.get(o['status'],'⚪')} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
     btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=btns)
