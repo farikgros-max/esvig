@@ -103,14 +103,30 @@ def get_cart_keyboard(cart):
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
 
-def get_admin_list_keyboard(channels_dict):
-    if not channels_dict: return None
+# ---------- Админ-список каналов с пагинацией ----------
+def get_admin_list_keyboard(channels_dict, page=0):
+    if not channels_dict:
+        return None, 0, 0
+    items = list(channels_dict.items())
+    # Сортируем по умолчанию (по ID или как захотите, здесь без сортировки)
+    tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    if page < 0: page = 0
+    if page >= tot: page = tot - 1
+    start = page * ITEMS_PER_PAGE
+    end = start + ITEMS_PER_PAGE
     btns = []
-    for cid, inf in channels_dict.items():
+    for cid, inf in items[start:end]:
         btns.append([InlineKeyboardButton(text=f"{inf['name']} | {inf['price']}$ | {inf['subscribers']} подп.", callback_data=f"admin_view_{cid}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_list_page_{page-1}"))
+    if page < tot - 1:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"admin_list_page_{page+1}"))
+    if nav: btns.append(nav)
     btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
-    return InlineKeyboardMarkup(inline_keyboard=btns)
+    return InlineKeyboardMarkup(inline_keyboard=btns), page, tot
 
+# Старая версия без страниц (удалить или оставить для совместимости? Удалим, будет использоваться только новая)
 def get_admin_remove_keyboard(channels_dict):
     if not channels_dict: return None
     btns = []
@@ -146,10 +162,14 @@ def get_profile_keyboard():
         [InlineKeyboardButton(text="🔍 Проверить платёж", callback_data="check_payment")]
     ])
 
+# Расширенная клавиатура статистики
 def get_stats_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Топ каналов", callback_data="top_channels"),
+         InlineKeyboardButton(text="📥 Экспорт заказов", callback_data="export_orders")],
         [InlineKeyboardButton(text="🗑 Очистить неуспешные", callback_data="confirm_clear_failed")],
-        [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")]
+        [InlineKeyboardButton(text="🗑 Полная очистка", callback_data="confirm_clear_all")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
     ])
 
 async def get_categories_admin_keyboard(get_all_categories):
@@ -189,3 +209,4 @@ async def get_category_selection_keyboard(get_all_categories, callback_prefix):
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+    
