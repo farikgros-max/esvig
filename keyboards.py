@@ -177,10 +177,10 @@ def get_edit_channel_keyboard(cid):
 
 def get_profile_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders")],
-        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit")],
-        [InlineKeyboardButton(text="🔍 Проверить платёж", callback_data="check_payment")],
-        [InlineKeyboardButton(text="📜 История", callback_data="transaction_history")],
+        [InlineKeyboardButton(text="💰 Пополнить баланс", callback_data="deposit"),
+         InlineKeyboardButton(text="🔍 Проверить платёж", callback_data="check_payment")],
+        [InlineKeyboardButton(text="📊 Мои заявки", callback_data="my_orders"),
+         InlineKeyboardButton(text="📜 История", callback_data="transaction_history")],
         [InlineKeyboardButton(text="👥 Реферальная программа", callback_data="referral_program")]
     ])
 
