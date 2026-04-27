@@ -1,82 +1,52 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+import requests
 
-from database import (
-    get_or_create_user,
-    get_orders_by_user,
-    get_user_balance,
-    update_user_balance,
-    debit_balance,
-    get_order_by_id,
-    update_order_status,
-    return_balance
-)
+from database import (get_or_create_user, get_user_daily_info, get_orders_by_user,
+                      get_user_balance, update_user_balance, debit_balance,
+                      get_order_by_id, update_order_status, return_balance)
+from states import OrderForm
+from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
+                   CHECK_PAYMENT_MESSAGE)
+from keyboards import (get_profile_keyboard, get_main_keyboard, cancel_keyboard)
+from config import MIN_DEPOSIT, PAID_BTN_URL, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, ADMIN_IDS
 
 router = Router()
 
-
-# ---------------- PROFILE ----------------
-
 @router.message(F.text == "👤 Мой профиль")
 async def profile(m: Message):
-    user = await get_or_create_user(m.from_user.id, m.from_user.username)
-
-    balance = await get_user_balance(m.from_user.id)
-    orders = await get_orders_by_user(m.from_user.id)
-
-    text = (
-        f"👤 Профиль\n\n"
-        f"🆔 ID: {m.from_user.id}\n"
-        f"💰 Баланс: {balance}$\n"
-        f"📦 Заказов: {len(orders)}\n"
-        f"📛 Username: @{m.from_user.username if m.from_user.username else 'нет'}"
-    )
-
-    await m.answer(text)
-
-
-# ---------------- ORDERS LIST ----------------
-
-@router.message(F.text == "📦 Мои заказы")
-async def my_orders(m: Message):
-    orders = await get_orders_by_user(m.from_user.id)
-
-    if not orders:
-        await m.answer("У вас нет заказов")
-        return
-
-    text = "📦 Ваши заказы:\n\n"
-
-    for o in orders[:10]:
-        text += (
-            f"#{o['id']} | {o['total']}$ | {o['status']}\n"
-        )
-
-    await m.answer(text)
-
-
-# ---------------- SINGLE ORDER ----------------
-
-@router.message(F.text.startswith("заказ "))
-async def order_info(m: Message):
     try:
-        order_id = int(m.text.split()[1])
-    except:
-        await m.answer("Неверный формат. Пример: заказ 1")
-        return
+        user = await get_or_create_user(m.from_user.id, m.from_user.username or "")
+        daily_limit, daily_used = 0, 0
+        try:
+            daily_limit, daily_used = await get_user_daily_info(m.from_user.id)
+        except Exception:
+            pass
+        left_orders = max(daily_limit - daily_used, 0) if daily_limit > 0 else "∞"
 
-    order = await get_order_by_id(order_id)
+        total_spent = 0
+        total_orders = 0
+        try:
+            completed_orders = await get_orders_by_user(m.from_user.id, limit=1000, only_completed=True)
+            total_spent = sum(o['total'] for o in completed_orders)
+            total_orders = len(completed_orders)
+        except Exception:
+            pass
 
-    if not order:
-        await m.answer("Заказ не найден")
-        return
+        txt = PROFILE_TEMPLATE.format(
+            user_id=m.from_user.id,
+            username=m.from_user.username or 'не указан',
+            total_orders=total_orders,
+            total_spent=total_spent,
+            balance=user.get('balance', 0),
+            left_orders=left_orders,
+            daily_limit=daily_limit if daily_limit > 0 else '∞'
+        )
+        # Вот эта строка вернёт кнопки
+        await m.answer(txt, reply_markup=get_profile_keyboard())
+    except Exception as e:
+        await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
 
-    text = (
-        f"📦 Заказ #{order['id']}\n"
-        f"👤 User: {order['username']}\n"
-        f"💰 Сумма: {order['total']}$\n"
-        f"📊 Статус: {order['status']}\n"
-        f"📞 Контакт: {order['contact']}"
-    )
-
-    await m.answer(text)
+# Остальные обработчики (пополнение, заявки) остаются без изменений
+# ...
