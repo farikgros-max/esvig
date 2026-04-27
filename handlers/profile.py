@@ -59,7 +59,6 @@ async def profile(m: Message):
 async def referral_program(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
     code = user.get('referral_code')
-    # Если код отсутствует (None) – генерируем и сразу сохраняем
     if not code:
         code = f"REF{cb.from_user.id}"
         try:
@@ -74,17 +73,19 @@ async def referral_program(cb: CallbackQuery):
         f"👥 Реферальная программа\n\n"
         f"🔗 Ваша ссылка:\n{link}\n\n"
         f"👥 Приглашено всего: {stats['invited']}\n"
+        f"   ├ 1-й уровень (4%): {stats.get('level1', 0)} чел.\n"
+        f"   ├ 2-й уровень (2%): {stats.get('level2', 0)} чел.\n"
+        f"   └ 3-й уровень (1%): {stats.get('level3', 0)} чел.\n\n"
         f"💰 Заработано за всё время: {stats['bonuses']}$\n"
         f"💳 Доступно к выводу: {user['balance']}$\n\n"
-        "Приглашайте друзей и получайте 5% от их заказов!"
+        "Приглашайте друзей и получайте до 4% от их заказов!"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw_start")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+        [InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw_start"),
+         InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
     ])
     await cb.message.edit_text(text, reply_markup=kb)
     await cb.answer()
-
 @router.callback_query(F.data == "back_to_profile")
 async def back_to_profile(cb: CallbackQuery):
     await profile(cb.message)
