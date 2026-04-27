@@ -120,9 +120,7 @@ async def withdraw_amount(m: Message, state: FSMContext):
 async def withdraw_to_balance(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     amount = data['amount']
-    # Просто возвращаем на баланс (то есть ничего не меняется, это демо-вывод "на счёт бота" означает, что реферальные бонусы уже на балансе)
-    # По сути, реферальные бонусы уже на балансе, поэтому можно просто зачислить обратно.
-    # Чтобы не было путаницы, просто покажем сообщение.
+    # Просто возвращаем на баланс (реферальные бонусы уже на балансе, так что фактически ничего не меняется)
     await cb.message.edit_text(
         f"✅ {amount}$ зачислено на ваш баланс.",
         reply_markup=get_profile_keyboard()
@@ -135,17 +133,28 @@ async def withdraw_crypto(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     amount = data['amount']
     user = await get_or_create_user(cb.from_user.id)
-    # Создаём заявку для админа
+    username = user.get('username', '')
+    if not username:
+        await cb.message.edit_text(
+            "❌ Для вывода на криптокошелёк необходимо установить @username в Telegram.\n"
+            "Установите его в настройках и попробуйте снова.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+            ])
+        )
+        await state.clear()
+        await cb.answer()
+        return
+    # Создаём заявку на вывод
     order_id = await save_order(
         cb.from_user.id,
-        user.get('username', ''),
+        username,
         [],  # пустая корзина
         amount,
         amount,
-        f"Вывод реферальных бонусов на криптокошелёк. Связь: @{user.get('username')}",
+        f"Вывод реферальных бонусов на криптокошелёк. Связь: @{username}",
         status='вывод'
     )
-    # Списываем сумму с баланса
     await debit_balance(cb.from_user.id, amount, order_id, f"Вывод реферальных бонусов #{order_id}")
     # Уведомление админам
     for aid in ADMIN_IDS:
@@ -153,9 +162,9 @@ async def withdraw_crypto(cb: CallbackQuery, state: FSMContext):
             await cb.bot.send_message(
                 aid,
                 f"💰 Заявка на вывод #{order_id}\n"
-                f"Пользователь: @{user.get('username')} ({cb.from_user.id})\n"
+                f"Пользователь: @{username} ({cb.from_user.id})\n"
                 f"Сумма: {amount}$\n"
-                f"Контакт: @{user.get('username')}"
+                f"Контакт: @{username}"
             )
         except:
             pass
