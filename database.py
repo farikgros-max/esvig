@@ -5,15 +5,12 @@ import asyncio
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# ---------- Глобальное постоянное подключение ----------
 _conn: asyncpg.Connection = None
 _lock = asyncio.Lock()
 
-# ---------- Хранилище каналов в памяти ----------
 _channels_dict = {}
 
 async def get_connection() -> asyncpg.Connection:
-    """Возвращает текущее подключение, пересоздаёт при необходимости."""
     global _conn
     if _conn is None or _conn.is_closed():
         async with _lock:
@@ -33,13 +30,14 @@ async def close_db():
         _conn = None
 
 async def _load_channels_from_db():
-    """Загружает каналы из БД в память."""
     global _channels_dict
     for attempt in range(5):
         try:
             conn = await get_connection()
             rows = await conn.fetch(
-                'SELECT id, name, price, subscribers, url, description, category_id FROM channels'
+                '''SELECT id, name, price, subscribers, url, description, category_id,
+                   COALESCE(active, TRUE) AS active
+                FROM channels'''
             )
             ch = {}
             for r in rows:
@@ -49,7 +47,8 @@ async def _load_channels_from_db():
                     "subscribers": r['subscribers'],
                     "url": r['url'],
                     "description": r['description'] or "",
-                    "category_id": r['category_id']
+                    "category_id": r['category_id'],
+                    "active": r['active']
                 }
             _channels_dict = ch
             print(f"[MEM] Каналы загружены в память: {len(ch)}")
@@ -60,10 +59,8 @@ async def _load_channels_from_db():
             await asyncio.sleep(1)
     print("[MEM] Не удалось загрузить каналы после 5 попыток")
 
-# ---------- Инициализация БД ----------
 async def init_db():
     conn = await get_connection()
-    # Создаём таблицы
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id SERIAL PRIMARY KEY,
@@ -78,7 +75,8 @@ async def init_db():
             subscribers INTEGER NOT NULL,
             url TEXT NOT NULL,
             description TEXT DEFAULT '',
-            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            active BOOLEAN DEFAULT TRUE
         )''')
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS orders (
@@ -114,7 +112,12 @@ async def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
 
-    # Категории по умолчанию
+    # Убедимся, что столбец active существует (миграция)
+    try:
+        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
+    except Exception:
+        pass
+
     exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
     if exists == 0:
         default_cats = [
@@ -130,7 +133,6 @@ async def init_db():
             default_cats
         )
 
-    # Загружаем каналы в память
     await _load_channels_from_db()
 
 # ---------- Пользователи и баланс ----------
@@ -257,7 +259,7 @@ async def get_category_by_id(cat_id):
     r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
     return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (из памяти) ----------
+# ---------- Каналы (с полем active) ----------
 async def get_all_channels(category_id=None):
     global _channels_dict
     if not _channels_dict:
@@ -266,7 +268,11 @@ async def get_all_channels(category_id=None):
         return {k: v for k, v in _channels_dict.items() if v.get('category_id') == category_id}
     return _channels_dict
 
-# Алиасы для совместимости со старыми модулями
+async def get_active_channels(category_id=None):
+    all_ch = await get_all_channels(category_id)
+    return {k: v for k, v in all_ch.items() if v.get('active', True)}
+
+# Алиасы
 async def get_channels(category_id=None):
     return await get_all_channels(category_id)
 
@@ -279,13 +285,13 @@ async def get_channel(channel_id):
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     conn = await get_connection()
     await conn.execute('''
-        INSERT INTO channels (id, name, price, subscribers, url, description, category_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO channels (id, name, price, subscribers, url, description, category_id, active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
         ON CONFLICT (id) DO UPDATE SET name=$2, price=$3, subscribers=$4, url=$5, description=$6, category_id=$7
     ''', ch_id, name, price, subscribers, url, desc, category_id)
     _channels_dict[ch_id] = {
         "name": name, "price": price, "subscribers": subscribers,
-        "url": url, "description": desc or "", "category_id": category_id
+        "url": url, "description": desc or "", "category_id": category_id, "active": True
     }
 
 async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category_id=None):
@@ -309,11 +315,49 @@ async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc
         await conn.execute('UPDATE channels SET category_id = $1 WHERE id = $2', category_id, ch_id)
         if ch_id in _channels_dict: _channels_dict[ch_id]['category_id'] = category_id
 
+async def toggle_channel_active(ch_id):
+    conn = await get_connection()
+    current = await conn.fetchval('SELECT active FROM channels WHERE id = $1', ch_id)
+    new_active = not current if current is not None else False
+    await conn.execute('UPDATE channels SET active = $1 WHERE id = $2', new_active, ch_id)
+    if ch_id in _channels_dict:
+        _channels_dict[ch_id]['active'] = new_active
+    return new_active
+
 async def delete_channel(ch_id):
     conn = await get_connection()
     await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
     if ch_id in _channels_dict:
         del _channels_dict[ch_id]
+
+# ---------- Статистика ----------
+async def get_top_channels(limit=10):
+    """Возвращает список каналов с количеством заказов и общей суммой."""
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT cart FROM orders')
+    channel_stats = {}
+    for r in rows:
+        try:
+            cart = json.loads(r['cart'])
+        except Exception:
+            continue
+        for item in cart:
+            cid = str(item.get('id'))
+            if cid not in channel_stats:
+                channel_stats[cid] = {"orders": 0, "total": 0}
+            channel_stats[cid]["orders"] += 1
+            channel_stats[cid]["total"] += item.get('price', 0)
+    # Сортируем по количеству заказов
+    sorted_ids = sorted(channel_stats, key=lambda x: channel_stats[x]['orders'], reverse=True)[:limit]
+    result = []
+    for cid in sorted_ids:
+        ch = _channels_dict.get(cid, {})
+        result.append({
+            "name": ch.get('name', f'ID {cid}'),
+            "orders": channel_stats[cid]['orders'],
+            "total": channel_stats[cid]['total']
+        })
+    return result
 
 # ---------- Заказы ----------
 async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
