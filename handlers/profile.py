@@ -83,7 +83,7 @@ async def referral_program(cb: CallbackQuery):
         f"🔗 Ваша ссылка:\n{link}\n\n"
         f"👥 Приглашено: {stats['invited']}\n"
         f"📈 Ваш уровень: {level_text}\n"
-        f"   ├ 0-10 чел. → 1%\n"
+        f"   ├ 1-10 чел. → 1%\n"
         f"   ├ 11-50 чел. → 2%\n"
         f"   └ 51+ чел. → 3.5%\n\n"
         f"💰 Заработано: {stats['bonuses']}$\n"
