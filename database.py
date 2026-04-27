@@ -2,6 +2,7 @@ import asyncpg
 import json
 import os
 import asyncio
+from datetime import datetime
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -112,7 +113,6 @@ async def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
 
-    # Убедимся, что столбец active существует (миграция)
     try:
         await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
     except Exception:
@@ -135,7 +135,7 @@ async def init_db():
 
     await _load_channels_from_db()
 
-# ---------- Пользователи и баланс ----------
+# ========== ПОЛЬЗОВАТЕЛИ И БАЛАНС ==========
 async def get_or_create_user(user_id: int, username: str = None):
     conn = await get_connection()
     user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
@@ -161,6 +161,26 @@ async def update_user_balance(user_id: int, amount: int, description: str = "П�
             "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'пополнение', $2, $3)",
             user_id, amount, description
         )
+    # Автоматически оплачиваем ожидающие заказы после пополнения
+    await process_pending_orders(user_id)
+
+async def process_pending_orders(user_id: int):
+    """Пытается оплатить все заказы пользователя со статусом 'ожидает оплаты'."""
+    conn = await get_connection()
+    pending = await conn.fetch(
+        "SELECT id, total FROM orders WHERE user_id = $1 AND status = 'ожидает оплаты' ORDER BY id",
+        user_id
+    )
+    if not pending:
+        return
+    balance = await get_user_balance(user_id)
+    for order in pending:
+        if balance >= order['total']:
+            success = await debit_balance(user_id, order['total'], order['id'], f"Оплата заказа #{order['id']}")
+            if success:
+                await update_order_status(order['id'], 'оплачена')
+                balance -= order['total']
+                # Отправляем уведомление? Обработчики это сделают при вызове из check_payment / пополнения
 
 async def debit_balance(user_id: int, amount: int, order_id: int, description: str = "Списание за заказ"):
     conn = await get_connection()
@@ -204,7 +224,7 @@ async def get_user_transactions(user_id, limit=10):
     )
     return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
 
-# ---------- Дневной лимит ----------
+# ========== ДНЕВНОЙ ЛИМИТ ==========
 async def check_daily_order_limit(user_id: int) -> bool:
     conn = await get_connection()
     user = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
@@ -230,7 +250,7 @@ async def get_user_daily_info(user_id: int):
     used = row['daily_orders_count'] if row['last_order_date'] == today else 0
     return row['daily_limit'], used
 
-# ---------- Категории ----------
+# ========== КАТЕГОРИИ ==========
 async def get_all_categories():
     conn = await get_connection()
     rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
@@ -259,7 +279,7 @@ async def get_category_by_id(cat_id):
     r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
     return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
-# ---------- Каналы (с полем active) ----------
+# ========== КАНАЛЫ ==========
 async def get_all_channels(category_id=None):
     global _channels_dict
     if not _channels_dict:
@@ -272,7 +292,6 @@ async def get_active_channels(category_id=None):
     all_ch = await get_all_channels(category_id)
     return {k: v for k, v in all_ch.items() if v.get('active', True)}
 
-# Алиасы
 async def get_channels(category_id=None):
     return await get_all_channels(category_id)
 
@@ -330,36 +349,7 @@ async def delete_channel(ch_id):
     if ch_id in _channels_dict:
         del _channels_dict[ch_id]
 
-# ---------- Статистика ----------
-async def get_top_channels(limit=10):
-    """Возвращает список каналов с количеством заказов и общей суммой."""
-    conn = await get_connection()
-    rows = await conn.fetch('SELECT cart FROM orders')
-    channel_stats = {}
-    for r in rows:
-        try:
-            cart = json.loads(r['cart'])
-        except Exception:
-            continue
-        for item in cart:
-            cid = str(item.get('id'))
-            if cid not in channel_stats:
-                channel_stats[cid] = {"orders": 0, "total": 0}
-            channel_stats[cid]["orders"] += 1
-            channel_stats[cid]["total"] += item.get('price', 0)
-    # Сортируем по количеству заказов
-    sorted_ids = sorted(channel_stats, key=lambda x: channel_stats[x]['orders'], reverse=True)[:limit]
-    result = []
-    for cid in sorted_ids:
-        ch = _channels_dict.get(cid, {})
-        result.append({
-            "name": ch.get('name', f'ID {cid}'),
-            "orders": channel_stats[cid]['orders'],
-            "total": channel_stats[cid]['total']
-        })
-    return result
-
-# ---------- Заказы ----------
+# ========== ЗАКАЗЫ ==========
 async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
     conn = await get_connection()
     async with conn.transaction():
@@ -420,3 +410,82 @@ async def clear_all_orders():
     async with conn.transaction():
         await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
         await conn.execute("DELETE FROM orders")
+
+# ========== СТАТИСТИКА ==========
+async def get_top_channels(limit=10):
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT cart FROM orders WHERE status IN ($1, $2)', 'оплачена', 'выполнена')
+    channel_stats = {}
+    for r in rows:
+        try:
+            cart = json.loads(r['cart'])
+        except Exception:
+            continue
+        for item in cart:
+            cid = str(item.get('id'))
+            if cid not in channel_stats:
+                channel_stats[cid] = {"orders": 0, "total": 0}
+            channel_stats[cid]["orders"] += 1
+            channel_stats[cid]["total"] += item.get('price', 0)
+    sorted_ids = sorted(channel_stats, key=lambda x: channel_stats[x]['orders'], reverse=True)[:limit]
+    result = []
+    for cid in sorted_ids:
+        ch = _channels_dict.get(cid, {})
+        result.append({
+            "name": ch.get('name', f'ID {cid}'),
+            "orders": channel_stats[cid]['orders'],
+            "total": channel_stats[cid]['total']
+        })
+    return result
+
+async def get_top_buyers(limit=10):
+    conn = await get_connection()
+    rows = await conn.fetch(
+        'SELECT user_id, username, SUM(total) as total_spent, COUNT(*) as order_count FROM orders WHERE status IN ($1, $2) GROUP BY user_id, username ORDER BY total_spent DESC LIMIT $3',
+        'оплачена', 'выполнена', limit
+    )
+    result = []
+    for r in rows:
+        result.append({
+            "user_id": r['user_id'],
+            "username": r['username'] or "Unknown",
+            "total_spent": r['total_spent'],
+            "order_count": r['order_count']
+        })
+    return result
+
+async def get_daily_revenue(days=7):
+    conn = await get_connection()
+    rows = await conn.fetch(
+        '''SELECT DATE(created_at) as day, COUNT(*) as orders, COALESCE(SUM(total),0) as revenue
+           FROM orders WHERE status IN ('оплачена', 'выполнена') AND created_at >= CURRENT_DATE - $1::integer
+           GROUP BY day ORDER BY day ASC''',
+        days
+    )
+    return [{"day": str(r['day']), "orders": r['orders'], "revenue": r['revenue']} for r in rows]
+
+# ========== РЕЗЕРВНОЕ КОПИРОВАНИЕ ==========
+async def backup_database():
+    """Создаёт JSON-дамп основных таблиц и возвращает путь к временному файлу."""
+    conn = await get_connection()
+    backup = {}
+    # Пользователи
+    users = await conn.fetch('SELECT * FROM users')
+    backup['users'] = [dict(r) for r in users]
+    # Категории
+    cats = await conn.fetch('SELECT * FROM categories')
+    backup['categories'] = [dict(r) for r in cats]
+    # Каналы
+    channels = await conn.fetch('SELECT * FROM channels')
+    backup['channels'] = [dict(r) for r in channels]
+    # Заказы
+    orders = await conn.fetch('SELECT * FROM orders')
+    backup['orders'] = [dict(r) for r in orders]
+    # Транзакции
+    trans = await conn.fetch('SELECT * FROM transactions')
+    backup['transactions'] = [dict(r) for r in trans]
+
+    filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(backup, f, ensure_ascii=False, indent=2, default=str)
+    return filename
