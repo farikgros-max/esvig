@@ -4,39 +4,50 @@ import logging
 import hashlib
 import hmac
 from aiohttp import web
+from logging.handlers import RotatingFileHandler
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Update
 
 from config import (BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY,
                     WEBHOOK_URL, SECRET_TOKEN, CHANNEL_ID, ORDER_CHANNEL_ID)
 from database import init_db, update_user_balance, auto_process_orders, get_connection, close_db
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
 
-# Импорт роутеров
-from handlers.start import router as start_router
-from handlers.catalog import router as catalog_router
-from handlers.cart import router as cart_router
-from handlers.profile import router as profile_router
-from handlers.admin import router as admin_router
-from handlers.info import router as info_router
-from handlers.referral import router as referral_router
-
-# Логирование с ротацией (ограничиваем размер файла)
-from logging.handlers import RotatingFileHandler
+# Ротация логов
 logging.basicConfig(
     handlers=[RotatingFileHandler('bot_errors.log', maxBytes=1_000_000, backupCount=3)],
     level=logging.ERROR,
     format='%(asctime)s %(levelname)s %(name)s:%(message)s'
 )
 
-# Инициализация бота
 bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
+# ---------- Глобальный перехватчик ошибок ----------
+class ErrorMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        try:
+            return await handler(event, data)
+        except Exception as e:
+            logging.error(f"Unhandled error: {e}", exc_info=True)
+            if hasattr(event, 'answer'):
+                await event.answer("⚠️ Произошла ошибка. Попробуйте позже.")
+            elif hasattr(event, 'message') and hasattr(event.message, 'answer'):
+                await event.message.answer("⚠️ Произошла ошибка. Попробуйте позже.")
+
 async def startup():
     await init_db()
-    # Подключаем роутеры
+    # Роутеры
+    from handlers.start import router as start_router
+    from handlers.catalog import router as catalog_router
+    from handlers.cart import router as cart_router
+    from handlers.profile import router as profile_router
+    from handlers.admin import router as admin_router
+    from handlers.info import router as info_router
+    from handlers.referral import router as referral_router
+
     dp_instance.include_router(start_router)
     dp_instance.include_router(catalog_router)
     dp_instance.include_router(cart_router)
@@ -44,11 +55,14 @@ async def startup():
     dp_instance.include_router(admin_router)
     dp_instance.include_router(info_router)
     dp_instance.include_router(referral_router)
-    # Middleware
+
+    # Middleware (сначала общий перехватчик, потом остальные)
+    dp_instance.message.middleware(ErrorMiddleware())
+    dp_instance.callback_query.middleware(ErrorMiddleware())
     dp_instance.message.middleware(SubscriptionMiddleware())
     dp_instance.message.middleware(AntiFloodMiddleware())
     dp_instance.callback_query.middleware(AntiFloodMiddleware())
-    # Удаляем вебхук и очищаем очередь
+
     await bot_instance.delete_webhook(drop_pending_updates=True)
     try:
         updates = await bot_instance.get_updates(offset=-1, limit=100, timeout=1)
@@ -59,9 +73,7 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
-# ---------- Фоновая проверка здоровья БД ----------
 async def db_health_check():
-    """Проверяет соединение с БД каждые 5 минут."""
     while True:
         try:
             conn = await get_connection()
@@ -71,10 +83,10 @@ async def db_health_check():
             await close_db()
         await asyncio.sleep(300)
 
-# Команда /ping
+# Пинг-команда
 from aiogram.filters import Command
 @dp_instance.message(Command("ping"))
-async def ping(m: Message):
+async def ping(m):
     try:
         conn = await get_connection()
         await conn.execute('SELECT 1')
@@ -82,7 +94,7 @@ async def ping(m: Message):
     except Exception:
         await m.answer("🔴 Проблема с базой данных")
 
-# Платёжные вебхуки (без изменений)
+# Вебхуки (без изменений)
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
@@ -139,7 +151,6 @@ async def xrocket_handler(request):
 
 async def main():
     await startup()
-    # Фоновые задачи
     asyncio.create_task(auto_process_orders(bot_instance))
     asyncio.create_task(db_health_check())
     aio_app = web.Application()
