@@ -7,13 +7,13 @@ WELCOME_CAPTION = (
 PROFILE_TEMPLATE = (
     "👤 Мой профиль\n\n"
     "🆔 ID: {user_id}\n"
-    "📛 Username: @{username}\n"
+    "📛 Username: @{username}\n\n"
+    "💳 Баланс: {balance}$\n\n"
     "📦 Успешных заказов: {total_orders}\n"
     "💰 Общая сумма трат: {total_spent}$\n"
-    "💳 Баланс: {balance}$\n"
-    "📅 Осталось заявок сегодня: {left_orders}/{daily_limit}\n"
+    "📅 Осталось заявок сегодня: {left_orders}/{daily_limit}\n\n"
     "👥 Приглашено друзей: {invited}\n"
-    "🎁 Реферальные бонусы: {bonuses}$"
+    "🎁 Реферальные бонусы: {referral_bonuses}$"
 )
 
 FAQ_MESSAGE = (
