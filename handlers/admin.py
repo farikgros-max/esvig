@@ -9,7 +9,7 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       clear_non_successful_orders, clear_all_orders,
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       get_or_create_user, update_user_balance, debit_balance, get_user_balance,
-                      get_top_channels)
+                      get_top_channels, get_top_buyers, get_daily_revenue, backup_database)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
@@ -17,7 +17,7 @@ from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_re
                        get_categories_admin_keyboard, get_category_actions_keyboard,
                        get_category_selection_keyboard, cancel_keyboard, get_main_keyboard,
                        get_admin_categories_keyboard, get_confirm_delete_category_keyboard)
-from config import ADMIN_IDS
+from config import ADMIN_IDS, ORDER_CHANNEL_ID
 
 router = Router()
 admin_logger = logging.getLogger('admin_actions')
@@ -468,6 +468,30 @@ async def top_channels_cb(cb: CallbackQuery):
     await cb.message.edit_text(text, reply_markup=get_stats_keyboard())
     await cb.answer()
 
+@router.callback_query(F.data == "top_buyers")
+async def top_buyers_cb(cb: CallbackQuery):
+    buyers = await get_top_buyers(10)
+    if not buyers:
+        await cb.answer("Нет данных о покупателях", show_alert=True)
+        return
+    text = "👥 Топ покупателей:\n\n"
+    for i, b in enumerate(buyers, 1):
+        text += f"{i}. {b['username']} — {b['total_spent']}$ ({b['order_count']} зак.)\n"
+    await cb.message.edit_text(text, reply_markup=get_stats_keyboard())
+    await cb.answer()
+
+@router.callback_query(F.data == "daily_revenue")
+async def daily_revenue_cb(cb: CallbackQuery):
+    revenue = await get_daily_revenue(7)
+    if not revenue:
+        await cb.answer("Нет данных о доходах", show_alert=True)
+        return
+    text = "📈 Доходы по дням:\n\n"
+    for day in revenue:
+        text += f"{day['day']}: {day['orders']} зак., {day['revenue']}$\n"
+    await cb.message.edit_text(text, reply_markup=get_stats_keyboard())
+    await cb.answer()
+
 @router.callback_query(F.data == "export_orders")
 async def export_orders_cb(cb: CallbackQuery):
     await export_orders(cb.message)
@@ -824,3 +848,16 @@ async def find_channels(m: Message):
         return
     kb, page, total = get_admin_list_keyboard(found, 0, category_id="all")
     await m.answer(f"Результаты поиска «{query}» (страница 1/{total}):", reply_markup=kb)
+
+# ---------- Резервное копирование ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/backup")
+async def backup_cmd(m: Message):
+    await m.answer("⏳ Создаю резервную копию базы данных...")
+    try:
+        filename = await backup_database()
+        from aiogram.types import FSInputFile
+        file = FSInputFile(filename)
+        await m.answer_document(file, caption="📦 Резервная копия базы данных")
+        os.remove(filename)
+    except Exception as e:
+        await m.answer(f"❌ Ошибка при создании бэкапа: {e}")
