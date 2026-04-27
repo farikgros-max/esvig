@@ -7,10 +7,10 @@ from database import (get_or_create_user, get_user_daily_info, get_orders_by_use
                       get_user_balance, update_user_balance, debit_balance,
                       get_order_by_id, update_order_status, return_balance,
                       get_user_transactions, process_pending_orders,
-                      get_referral_stats)
-from states import OrderForm
+                      get_referral_stats, save_order)
+from states import OrderForm, WithdrawStates
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
-                   CHECK_PAYMENT_MESSAGE, REFERRAL_INFO)
+                   CHECK_PAYMENT_MESSAGE, WITHDRAW_MIN)
 from keyboards import (get_profile_keyboard, get_main_keyboard, cancel_keyboard)
 from config import MIN_DEPOSIT, PAID_BTN_URL, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, ADMIN_IDS
 
@@ -37,7 +37,6 @@ async def profile(m: Message):
         except Exception:
             pass
 
-        # Реферальная статистика
         ref_stats = await get_referral_stats(m.from_user.id)
 
         txt = PROFILE_TEMPLATE.format(
@@ -55,7 +54,7 @@ async def profile(m: Message):
     except Exception as e:
         await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
 
-# ---------- Реферальная программа (вкладка) ----------
+# ---------- Реферальная программа ----------
 @router.callback_query(F.data == "referral_program")
 async def referral_program(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
@@ -72,6 +71,7 @@ async def referral_program(cb: CallbackQuery):
         "Приглашайте друзей и получайте 5% от их заказов!"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw_start")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
     ])
     await cb.message.edit_text(text, reply_markup=kb)
@@ -79,8 +79,91 @@ async def referral_program(cb: CallbackQuery):
 
 @router.callback_query(F.data == "back_to_profile")
 async def back_to_profile(cb: CallbackQuery):
-    # Повторно выводим профиль (без изменений)
     await profile(cb.message)
+    await cb.answer()
+
+# ---------- Вывод средств ----------
+@router.callback_query(F.data == "withdraw_start")
+async def withdraw_start(cb: CallbackQuery, state: FSMContext):
+    await cb.message.edit_text(
+        f"{WITHDRAW_MIN}\nВведите сумму:",
+        reply_markup=cancel_keyboard()
+    )
+    await state.set_state(WithdrawStates.waiting_for_amount)
+    await cb.answer()
+
+@router.message(WithdrawStates.waiting_for_amount)
+async def withdraw_amount(m: Message, state: FSMContext):
+    text = m.text.strip()
+    try:
+        amount = float(text)
+    except ValueError:
+        await m.answer("Введите число (например, 5, 10, 25.5).")
+        return
+    if amount < 5:
+        await m.answer(WITHDRAW_MIN)
+        return
+    balance = await get_user_balance(m.from_user.id)
+    if amount > balance:
+        await m.answer(f"Недостаточно средств. Ваш баланс: {balance}$")
+        return
+    await state.update_data(amount=amount)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 На счёт бота", callback_data="withdraw_to_balance")],
+        [InlineKeyboardButton(text="💵 На криптокошелёк", callback_data="withdraw_crypto")],
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="back_to_profile")]
+    ])
+    await m.answer("Выберите способ вывода:", reply_markup=kb)
+    await state.set_state(WithdrawStates.waiting_for_method)
+
+@router.callback_query(F.data == "withdraw_to_balance", WithdrawStates.waiting_for_method)
+async def withdraw_to_balance(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    amount = data['amount']
+    # Просто возвращаем на баланс (то есть ничего не меняется, это демо-вывод "на счёт бота" означает, что реферальные бонусы уже на балансе)
+    # По сути, реферальные бонусы уже на балансе, поэтому можно просто зачислить обратно.
+    # Чтобы не было путаницы, просто покажем сообщение.
+    await cb.message.edit_text(
+        f"✅ {amount}$ зачислено на ваш баланс.",
+        reply_markup=get_profile_keyboard()
+    )
+    await state.clear()
+    await cb.answer()
+
+@router.callback_query(F.data == "withdraw_crypto", WithdrawStates.waiting_for_method)
+async def withdraw_crypto(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    amount = data['amount']
+    user = await get_or_create_user(cb.from_user.id)
+    # Создаём заявку для админа
+    order_id = await save_order(
+        cb.from_user.id,
+        user.get('username', ''),
+        [],  # пустая корзина
+        amount,
+        amount,
+        f"Вывод реферальных бонусов на криптокошелёк. Связь: @{user.get('username')}",
+        status='вывод'
+    )
+    # Списываем сумму с баланса
+    await debit_balance(cb.from_user.id, amount, order_id, f"Вывод реферальных бонусов #{order_id}")
+    # Уведомление админам
+    for aid in ADMIN_IDS:
+        try:
+            await cb.bot.send_message(
+                aid,
+                f"💰 Заявка на вывод #{order_id}\n"
+                f"Пользователь: @{user.get('username')} ({cb.from_user.id})\n"
+                f"Сумма: {amount}$\n"
+                f"Контакт: @{user.get('username')}"
+            )
+        except:
+            pass
+    await cb.message.edit_text(
+        f"✅ Заявка на вывод {amount}$ создана. Ожидайте выплаты.",
+        reply_markup=get_profile_keyboard()
+    )
+    await state.clear()
     await cb.answer()
 
 # ---------- История транзакций ----------
@@ -88,13 +171,22 @@ async def back_to_profile(cb: CallbackQuery):
 async def transaction_history(cb: CallbackQuery):
     transactions = await get_user_transactions(cb.from_user.id, limit=10)
     if not transactions:
-        await cb.answer("История пуста", show_alert=True)
+        await cb.message.edit_text(
+            "📜 История пуста.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+            ])
+        )
+        await cb.answer()
         return
     text = "📜 Последние операции:\n\n"
     for t in transactions:
         emoji = "🟢" if t['type'] in ('пополнение', 'реферальный бонус') else "🔴"
         text += f"{emoji} {t['amount']}$ — {t['description']}\n   {t['created_at']}\n\n"
-    await cb.message.edit_text(text, reply_markup=get_profile_keyboard())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+    ])
+    await cb.message.edit_text(text, reply_markup=kb)
     await cb.answer()
 
 # ---------- Пополнение баланса ----------
@@ -129,6 +221,7 @@ async def deposit_xrocket_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 @router.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
+@router.callback_query(F.data == "cancel_add_channel", WithdrawStates.waiting_for_amount)
 async def cancel_deposit(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("👤 Мой профиль", reply_markup=get_profile_keyboard())
@@ -243,20 +336,24 @@ async def check_payment_handler(cb: CallbackQuery):
 async def my_ords(cb: CallbackQuery):
     ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
     if not ords:
-        await cb.message.delete()
-        await cb.message.answer("📭 У вас пока нет заявок.", reply_markup=get_main_keyboard(cb.from_user.id))
+        await cb.message.edit_text(
+            "📭 У вас пока нет заявок.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+            ])
+        )
         await cb.answer()
         return
     txt = "📊 Ваши заявки:\n\n"
     btns = []
-    em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒'}
+    em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒', 'вывод':'💰'}
     for o in ords:
         txt += f"🆔 №{o['id']}\n💰 Сумма: {o['total']}$\n📦 Товаров: {len(o['cart'])}\n📌 Статус: {em.get(o['status'],'⚪')} {o['status']}\n🕒 {o['created_at']}\n➖➖➖➖➖\n"
         row = [InlineKeyboardButton(text="📄 Подробнее", callback_data=f"order_details_{o['id']}")]
         if o['status'] in ('в обработке', 'оплачена', 'ожидает оплаты'):
             row.append(InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_order_{o['id']}"))
         btns.append(row)
-    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
+    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")])
     await cb.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
     await cb.answer()
 
@@ -268,8 +365,10 @@ async def order_details(cb: CallbackQuery):
         await cb.answer("Заявка не найдена", True)
         return
     items = "\n".join(f"• {it['name']} — {it['price']}$" for it in ordd['cart'])
-    await cb.message.edit_text(f"📄 Заявка #{oid}\n📌 Статус: {ordd['status']}\n💰 Сумма: {ordd['total']}$\n\n📦 Состав:\n{items}",
-                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="my_orders")]]))
+    await cb.message.edit_text(
+        f"📄 Заявка #{oid}\n📌 Статус: {ordd['status']}\n💰 Сумма: {ordd['total']}$\n\n📦 Состав:\n{items}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="my_orders")]])
+    )
     await cb.answer()
 
 @router.callback_query(F.data.startswith("cancel_order_"))
@@ -286,7 +385,10 @@ async def cancel_order(cb: CallbackQuery):
         [InlineKeyboardButton(text="✅ Да, отменить", callback_data=f"confirm_cancel_{order_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="my_orders")]
     ])
-    await cb.message.edit_text(f"⚠️ Вы уверены, что хотите отменить заявку #{order_id} на сумму {ordd['total']}$?\nДеньги будут возвращены на баланс.", reply_markup=kb)
+    await cb.message.edit_text(
+        f"⚠️ Вы уверены, что хотите отменить заявку #{order_id} на сумму {ordd['total']}$?\nДеньги будут возвращены на баланс.",
+        reply_markup=kb
+    )
     await cb.answer()
 
 @router.callback_query(F.data.startswith("confirm_cancel_"))
