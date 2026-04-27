@@ -56,7 +56,7 @@ async def _load_channels_from_db():
             return
         except Exception as e:
             print(f"[MEM] Попытка {attempt+1}: {e}")
-            await close_db()  # обрываем плохое соединение
+            await close_db()
             await asyncio.sleep(1)
     print("[MEM] Не удалось загрузить каналы после 5 попыток")
 
@@ -233,7 +233,6 @@ async def get_all_categories():
     conn = await get_connection()
     rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
     if not rows:
-        # создаём стандартные
         await conn.executemany(
             'INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
             [('news', 'Новостные'), ('trading', 'Торговые'), ('analytics', 'Аналитика'),
@@ -260,13 +259,22 @@ async def get_category_by_id(cat_id):
 
 # ---------- Каналы (из памяти) ----------
 async def get_all_channels(category_id=None):
-    """Читает каналы из памяти. Если память пуста – загружает из БД."""
     global _channels_dict
     if not _channels_dict:
         await _load_channels_from_db()
     if category_id is not None:
         return {k: v for k, v in _channels_dict.items() if v.get('category_id') == category_id}
     return _channels_dict
+
+# Алиасы для совместимости со старыми модулями
+async def get_channels(category_id=None):
+    return await get_all_channels(category_id)
+
+async def get_channel(channel_id):
+    global _channels_dict
+    if not _channels_dict:
+        await _load_channels_from_db()
+    return _channels_dict.get(str(channel_id))
 
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     conn = await get_connection()
