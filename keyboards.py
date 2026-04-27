@@ -8,8 +8,7 @@ def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")],
-        [KeyboardButton(text="📝 Поддержка")]
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
     ]
     if user_id in ADMIN_IDS:
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
@@ -26,8 +25,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
-        [InlineKeyboardButton(text="🎫 Тикеты", callback_data="admin_tickets"),
-         InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")]
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")]
     ])
 
 async def get_categories_keyboard(get_all_categories):
