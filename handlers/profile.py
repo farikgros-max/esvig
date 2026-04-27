@@ -5,7 +5,8 @@ import requests
 
 from database import (get_or_create_user, get_user_daily_info, get_orders_by_user,
                       get_user_balance, update_user_balance, debit_balance,
-                      get_order_by_id, update_order_status, return_balance)
+                      get_order_by_id, update_order_status, return_balance,
+                      get_user_transactions)
 from states import OrderForm
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
                    CHECK_PAYMENT_MESSAGE)
@@ -47,6 +48,20 @@ async def profile(m: Message):
         await m.answer(txt, reply_markup=get_profile_keyboard())
     except Exception as e:
         await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
+
+# ---------- История транзакций ----------
+@router.callback_query(F.data == "transaction_history")
+async def transaction_history(cb: CallbackQuery):
+    transactions = await get_user_transactions(cb.from_user.id, limit=10)
+    if not transactions:
+        await cb.answer("История пуста", show_alert=True)
+        return
+    text = "📜 Последние операции:\n\n"
+    for t in transactions:
+        emoji = "🟢" if t['type'] == 'пополнение' else "🔴"
+        text += f"{emoji} {t['amount']}$ — {t['description']}\n   {t['created_at']}\n\n"
+    await cb.message.edit_text(text, reply_markup=get_profile_keyboard())
+    await cb.answer()
 
 # ---------- Пополнение баланса ----------
 @router.callback_query(F.data == "deposit")
