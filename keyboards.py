@@ -27,8 +27,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
     ])
 
-# Все остальные функции оставьте без изменений
-async def get_categories_keyboard(cats):
+async def get_categories_keyboard(get_all_categories):
+    cats = await get_all_categories()
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
     rows = []
@@ -78,7 +78,7 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
         btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"channel_view_{cid}")])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page-1}_{sort_by}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page}_{sort_by}"))
     if page < tot - 1:
         nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}_{sort_by}"))
     if nav: btns.append(nav)
