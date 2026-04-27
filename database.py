@@ -11,6 +11,12 @@ _lock = asyncio.Lock()
 
 _channels_dict = {}
 
+REFERRAL_LEVELS = {
+    1: 4,  # 4% для прямых приглашённых
+    2: 2,  # 2% для приглашённых второго уровня
+    3: 1,  # 1% для третьего уровня
+}
+
 async def get_connection() -> asyncpg.Connection:
     global _conn
     if _conn is None or _conn.is_closed():
@@ -114,6 +120,27 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
+    # Тикетная система
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS tickets (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            username TEXT,
+            subject TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            closed_at TIMESTAMPTZ
+        )''')
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS ticket_messages (
+            id SERIAL PRIMARY KEY,
+            ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL,
+            message TEXT NOT NULL,
+            is_admin BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )''')
     # Добавляем столбцы, если их нет (миграция)
     try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
@@ -147,17 +174,14 @@ async def init_db():
 
 # ---------- Автоматизация ----------
 async def auto_process_orders(bot):
-    """Фоновая задача: автоматическое закрытие и отмена заказов."""
     while True:
         try:
             conn = await get_connection()
             now = datetime.now()
-            # 1. Отменяем заказы «ожидает оплаты» старше 24 часов
             await conn.execute(
                 "UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1",
                 now - timedelta(hours=24)
             )
-            # 2. Закрываем оплаченные заказы старше 48 часов
             await conn.execute(
                 "UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1",
                 now - timedelta(hours=48)
@@ -181,7 +205,6 @@ async def get_or_create_user(user_id: int, username: str = None, inviter_id: int
                 'daily_orders_count': 0, 'referral_code': code, 'inviter_id': inviter_id}
     if username and user['username'] != username:
         await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
-    # Если у существующего пользователя нет реферального кода – генерируем
     referral_code = user['referral_code']
     if not referral_code:
         referral_code = f"REF{user_id}"
@@ -198,6 +221,20 @@ async def get_user_by_referral_code(code: str):
     conn = await get_connection()
     return await conn.fetchrow('SELECT user_id FROM users WHERE referral_code = $1', code)
 
+async def get_referral_chain(user_id: int) -> list:
+    """Возвращает цепочку пригласителей [inviter, inviter_of_inviter, ...] до 3 уровней."""
+    chain = []
+    current = user_id
+    for _ in range(3):
+        conn = await get_connection()
+        inviter = await conn.fetchval('SELECT inviter_id FROM users WHERE user_id = $1', current)
+        if inviter:
+            chain.append(inviter)
+            current = inviter
+        else:
+            break
+    return chain
+
 async def get_referral_stats(user_id: int):
     conn = await get_connection()
     invited = await conn.fetchval('SELECT COUNT(*) FROM users WHERE inviter_id = $1', user_id)
@@ -205,7 +242,32 @@ async def get_referral_stats(user_id: int):
         "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id = $1 AND type = 'реферальный бонус'",
         user_id
     )
-    return {"invited": invited, "bonuses": bonuses}
+    # Количество приглашённых по уровням (для отображения)
+    level1 = await conn.fetchval(
+        "SELECT COUNT(*) FROM users u1 WHERE u1.inviter_id = $1", user_id
+    )
+    level2 = await conn.fetchval(
+        """SELECT COUNT(*) FROM users u2
+           WHERE u2.inviter_id IN (SELECT user_id FROM users WHERE inviter_id = $1)""",
+        user_id
+    )
+    level3 = await conn.fetchval(
+        """SELECT COUNT(*) FROM users u3
+           WHERE u3.inviter_id IN (
+               SELECT user_id FROM users WHERE inviter_id IN (
+                   SELECT user_id FROM users WHERE inviter_id = $1
+               )
+           )""",
+        user_id
+    )
+    return {
+        "invited": invited,
+        "bonuses": bonuses,
+        "level1": level1,
+        "level2": level2,
+        "level3": level3,
+        "levels": REFERRAL_LEVELS
+    }
 
 async def process_referral_bonus(order_id: int, order_total: int):
     conn = await get_connection()
@@ -213,20 +275,23 @@ async def process_referral_bonus(order_id: int, order_total: int):
     if not order:
         return
     user_id = order['user_id']
-    inviter = await conn.fetchrow('SELECT inviter_id FROM users WHERE user_id = $1', user_id)
-    if inviter and inviter['inviter_id']:
-        bonus = int(order_total * 0.05)
+    chain = await get_referral_chain(user_id)
+    for level, inviter_id in enumerate(chain, 1):
+        percent = REFERRAL_LEVELS.get(level, 0)
+        if percent == 0:
+            break
+        bonus = int(order_total * percent / 100)
         if bonus > 0:
             async with conn.transaction():
                 await conn.execute(
                     'UPDATE users SET balance = balance + $1 WHERE user_id = $2',
-                    bonus, inviter['inviter_id']
+                    bonus, inviter_id
                 )
                 await conn.execute(
                     '''INSERT INTO transactions (user_id, type, amount, order_id, description)
                        VALUES ($1, 'реферальный бонус', $2, $3, $4)''',
-                    inviter['inviter_id'], bonus, order_id,
-                    f"Реферальный бонус от заказа #{order_id} пользователя {user_id}"
+                    inviter_id, bonus, order_id,
+                    f"Реферальный бонус уровня {level} от заказа #{order_id} пользователя {user_id}"
                 )
 
 async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
@@ -548,8 +613,69 @@ async def backup_database():
     backup['orders'] = [dict(r) for r in orders]
     trans = await conn.fetch('SELECT * FROM transactions')
     backup['transactions'] = [dict(r) for r in trans]
+    tickets = await conn.fetch('SELECT * FROM tickets')
+    backup['tickets'] = [dict(r) for r in tickets]
+    ticket_msgs = await conn.fetch('SELECT * FROM ticket_messages')
+    backup['ticket_messages'] = [dict(r) for r in ticket_msgs]
 
     filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(backup, f, ensure_ascii=False, indent=2, default=str)
     return filename
+
+# ---------- ТИКЕТНАЯ СИСТЕМА ----------
+async def create_ticket(user_id: int, username: str, subject: str, message: str) -> int:
+    conn = await get_connection()
+    async with conn.transaction():
+        ticket_id = await conn.fetchval(
+            '''INSERT INTO tickets (user_id, username, subject, status)
+               VALUES ($1, $2, $3, 'open') RETURNING id''',
+            user_id, username, subject
+        )
+        await conn.execute(
+            '''INSERT INTO ticket_messages (ticket_id, user_id, message)
+               VALUES ($1, $2, $3)''',
+            ticket_id, user_id, message
+        )
+    return ticket_id
+
+async def get_tickets(status: str = 'open') -> list:
+    conn = await get_connection()
+    rows = await conn.fetch(
+        '''SELECT id, user_id, username, subject, status, created_at FROM tickets
+           WHERE status = $1 ORDER BY created_at DESC LIMIT 50''',
+        status
+    )
+    return [dict(r) for r in rows]
+
+async def get_ticket_messages(ticket_id: int) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch(
+        '''SELECT user_id, message, created_at, is_admin FROM ticket_messages
+           WHERE ticket_id = $1 ORDER BY created_at ASC''',
+        ticket_id
+    )
+    return [dict(r) for r in rows]
+
+async def add_ticket_message(ticket_id: int, user_id: int, message: str, is_admin: bool = False):
+    conn = await get_connection()
+    await conn.execute(
+        '''INSERT INTO ticket_messages (ticket_id, user_id, message, is_admin)
+           VALUES ($1, $2, $3, $4)''',
+        ticket_id, user_id, message, is_admin
+    )
+    await conn.execute(
+        'UPDATE tickets SET updated_at = NOW() WHERE id = $1', ticket_id
+    )
+
+async def close_ticket(ticket_id: int):
+    conn = await get_connection()
+    await conn.execute(
+        "UPDATE tickets SET status = 'closed', closed_at = NOW() WHERE id = $1", ticket_id
+    )
+
+# ---------- РАССЫЛКА ----------
+async def get_all_user_ids() -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT user_id FROM users')
+    return [r['user_id'] for r in rows]
