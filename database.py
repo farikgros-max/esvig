@@ -114,27 +114,6 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-    # Тикетная система
-    await conn.execute('''
-        CREATE TABLE IF NOT EXISTS tickets (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            username TEXT,
-            subject TEXT NOT NULL,
-            status TEXT DEFAULT 'open',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            closed_at TIMESTAMPTZ
-        )''')
-    await conn.execute('''
-        CREATE TABLE IF NOT EXISTS ticket_messages (
-            id SERIAL PRIMARY KEY,
-            ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
-            user_id BIGINT NOT NULL,
-            message TEXT NOT NULL,
-            is_admin BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        )''')
     try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
     except Exception:
@@ -215,13 +194,11 @@ async def get_user_by_referral_code(code: str):
     return await conn.fetchrow('SELECT user_id FROM users WHERE referral_code = $1', code)
 
 async def get_user_invited_count(user_id: int) -> int:
-    """Сколько человек пригласил данный пользователь (прямые рефералы)."""
     conn = await get_connection()
     count = await conn.fetchval('SELECT COUNT(*) FROM users WHERE inviter_id = $1', user_id)
     return count or 0
 
 def get_referral_level(invited_count: int) -> int:
-    """Определяет уровень по количеству приглашённых."""
     if invited_count <= 10:
         return 1
     elif invited_count <= 50:
@@ -230,7 +207,6 @@ def get_referral_level(invited_count: int) -> int:
         return 3
 
 def get_referral_percent(level: int) -> float:
-    """Возвращает процент бонуса для заданного уровня."""
     if level == 1:
         return 1.0
     elif level == 2:
@@ -240,16 +216,14 @@ def get_referral_percent(level: int) -> float:
     return 0.0
 
 async def get_referral_stats(user_id: int):
-    """Статистика для реферальной программы."""
     invited = await get_user_invited_count(user_id)
     level = get_referral_level(invited)
     percent = get_referral_percent(level)
-    # Общий заработок с рефералов
+    conn = await get_connection()
     bonuses = await conn.fetchval(
         "SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id = $1 AND type = 'реферальный бонус'",
         user_id
-    ) if (conn := await get_connection()) else 0
-    # Прогресс до следующего уровня
+    ) or 0
     next_level = level + 1 if level < 3 else None
     needed = 0
     if next_level == 2:
@@ -261,7 +235,7 @@ async def get_referral_stats(user_id: int):
         "invited": invited,
         "level": level,
         "percent": percent,
-        "bonuses": bonuses or 0,
+        "bonuses": bonuses,
         "next_level": next_level,
         "needed": needed
     }
@@ -272,12 +246,10 @@ async def process_referral_bonus(order_id: int, order_total: int):
     if not order:
         return
     user_id = order['user_id']
-    # Находим прямого пригласителя
     inviter = await conn.fetchrow('SELECT inviter_id FROM users WHERE user_id = $1', user_id)
     if not inviter or not inviter['inviter_id']:
         return
     inviter_id = inviter['inviter_id']
-    # Считаем, сколько у него приглашённых
     invited_count = await get_user_invited_count(inviter_id)
     level = get_referral_level(invited_count)
     percent = get_referral_percent(level)
@@ -617,66 +589,11 @@ async def backup_database():
     backup['orders'] = [dict(r) for r in orders]
     trans = await conn.fetch('SELECT * FROM transactions')
     backup['transactions'] = [dict(r) for r in trans]
-    tickets = await conn.fetch('SELECT * FROM tickets')
-    backup['tickets'] = [dict(r) for r in tickets]
-    ticket_msgs = await conn.fetch('SELECT * FROM ticket_messages')
-    backup['ticket_messages'] = [dict(r) for r in ticket_msgs]
 
     filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(backup, f, ensure_ascii=False, indent=2, default=str)
     return filename
-
-# ---------- ТИКЕТНАЯ СИСТЕМА ----------
-async def create_ticket(user_id: int, username: str, subject: str, message: str) -> int:
-    conn = await get_connection()
-    async with conn.transaction():
-        ticket_id = await conn.fetchval(
-            '''INSERT INTO tickets (user_id, username, subject, status)
-               VALUES ($1, $2, $3, 'open') RETURNING id''',
-            user_id, username, subject
-        )
-        await conn.execute(
-            '''INSERT INTO ticket_messages (ticket_id, user_id, message)
-               VALUES ($1, $2, $3)''',
-            ticket_id, user_id, message
-        )
-    return ticket_id
-
-async def get_tickets(status: str = 'open') -> list:
-    conn = await get_connection()
-    rows = await conn.fetch(
-        '''SELECT id, user_id, username, subject, status, created_at FROM tickets
-           WHERE status = $1 ORDER BY created_at DESC LIMIT 50''',
-        status
-    )
-    return [dict(r) for r in rows]
-
-async def get_ticket_messages(ticket_id: int) -> list:
-    conn = await get_connection()
-    rows = await conn.fetch(
-        '''SELECT user_id, message, created_at, is_admin FROM ticket_messages
-           WHERE ticket_id = $1 ORDER BY created_at ASC''',
-        ticket_id
-    )
-    return [dict(r) for r in rows]
-
-async def add_ticket_message(ticket_id: int, user_id: int, message: str, is_admin: bool = False):
-    conn = await get_connection()
-    await conn.execute(
-        '''INSERT INTO ticket_messages (ticket_id, user_id, message, is_admin)
-           VALUES ($1, $2, $3, $4)''',
-        ticket_id, user_id, message, is_admin
-    )
-    await conn.execute(
-        'UPDATE tickets SET updated_at = NOW() WHERE id = $1', ticket_id
-    )
-
-async def close_ticket(ticket_id: int):
-    conn = await get_connection()
-    await conn.execute(
-        "UPDATE tickets SET status = 'closed', closed_at = NOW() WHERE id = $1", ticket_id
-    )
 
 # ---------- РАССЫЛКА ----------
 async def get_all_user_ids() -> list:
