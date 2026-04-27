@@ -1,4 +1,5 @@
 import os, asyncio, time, asyncpg, json, logging, re
+from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -15,10 +16,16 @@ from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
                        get_admin_orders_keyboard, get_edit_channel_keyboard, get_stats_keyboard,
                        get_categories_admin_keyboard, get_category_actions_keyboard,
-                       get_category_selection_keyboard, cancel_keyboard, get_main_keyboard)
+                       get_category_selection_keyboard, cancel_keyboard, get_main_keyboard,
+                       get_admin_categories_keyboard, get_confirm_delete_category_keyboard)
 from config import ADMIN_IDS
 
 router = Router()
+admin_logger = logging.getLogger('admin_actions')
+admin_logger.setLevel(logging.INFO)
+fh = logging.FileHandler('admin_actions.log')
+fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+admin_logger.addHandler(fh)
 
 # ---------- Вход в админ‑панель ----------
 @router.message(F.text == "🔑 Админ‑панель")
@@ -42,7 +49,7 @@ async def adm_back(cb: CallbackQuery):
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
     await cb.answer()
 
-# ---------- Управление категориями ----------
+# ---------- Управление категориями с подтверждением удаления ----------
 @router.callback_query(F.data == "admin_categories")
 async def admin_categories_menu(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
@@ -75,6 +82,7 @@ async def add_cat_display(m: Message, state: FSMContext):
         await m.answer("Название не может быть пустым")
         return
     await add_category(name, display)
+    admin_logger.info(f"Admin {m.from_user.id} added category '{name}'")
     await m.answer(f"✅ Категория '{display}' добавлена", reply_markup=get_admin_keyboard())
     await state.clear()
 
@@ -86,35 +94,76 @@ async def admin_category_detail(cb: CallbackQuery):
     if not cat:
         await cb.answer("Категория не найдена", True)
         return
-    await cb.message.edit_text(f"Категория: {cat['display_name']} (id={cat_id}, имя={cat['name']})", reply_markup=get_category_actions_keyboard(cat_id))
+    await cb.message.edit_text(
+        f"Категория: {cat['display_name']} (id={cat_id}, имя={cat['name']})",
+        reply_markup=get_category_actions_keyboard(cat_id)
+    )
     await cb.answer()
 
-@router.callback_query(F.data.startswith("admin_del_category_"))
-async def admin_del_category(cb: CallbackQuery):
+@router.callback_query(F.data.startswith("confirm_delete_category_"))
+async def confirm_delete_category(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    cat_id = int(cb.data.split("_")[3])
+    cat_id = int(cb.data.split("_")[-1])
+    cat = await get_category_by_id(cat_id)
+    if not cat:
+        await cb.answer("Категория не найдена", True)
+        return
+    await cb.message.edit_text(
+        f"Удалить категорию «{cat['display_name']}» и все её каналы?",
+        reply_markup=get_confirm_delete_category_keyboard(cat_id)
+    )
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("exec_delete_category_"))
+async def exec_delete_category(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    cat_id = int(cb.data.split("_")[-1])
     await delete_category(cat_id)
+    admin_logger.info(f"Admin {cb.from_user.id} deleted category {cat_id}")
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов с пагинацией ----------
+# ---------- Список каналов с выбором категории ----------
 @router.callback_query(F.data == "admin_list")
-@router.callback_query(F.data.startswith("admin_list_page_"))
-async def adm_list(cb: CallbackQuery):
+async def admin_list_categories(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    # Определяем страницу
-    if cb.data == "admin_list":
-        page = 0
-    else:
-        page = int(cb.data.split("_")[-1])
-    ch = await get_all_channels()
+    await cb.message.edit_text("Выберите категорию:", reply_markup=await get_admin_categories_keyboard(get_all_categories))
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("admin_cat_"))
+async def admin_list_channels(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    cat_id = int(cb.data.split("_")[2])
+    ch = await get_all_channels(cat_id)
     if not ch:
-        await cb.message.edit_text("❌ Не удалось загрузить каналы. Попробуйте позже.", reply_markup=get_main_keyboard(cb.from_user.id))
+        await cb.message.edit_text("В этой категории нет каналов.", reply_markup=get_admin_keyboard())
         await cb.answer()
         return
-    kb, cur, total = get_admin_list_keyboard(ch, page)
-    await cb.message.edit_text(f"📋 Список каналов (страница {cur+1}/{total})", reply_markup=kb)
+    kb, page, total = get_admin_list_keyboard(ch, 0, category_id=cat_id)
+    await cb.message.edit_text(f"📋 Каналы в категории (страница 1/{total})", reply_markup=kb)
     await cb.answer()
+
+@router.callback_query(F.data.startswith("admin_list_page_"))
+async def admin_list_page(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    parts = cb.data.split("_")
+    page = int(parts[3])
+    cat_id = parts[4]
+    if cat_id == "all":
+        ch = await get_all_channels()
+    else:
+        ch = await get_all_channels(int(cat_id))
+    if not ch:
+        await cb.message.edit_text("Нет каналов.", reply_markup=get_admin_keyboard())
+        await cb.answer()
+        return
+    kb, cur, total = get_admin_list_keyboard(ch, page, category_id=cat_id)
+    await cb.message.edit_text(f"📋 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data == "admin_list_back")
+async def admin_list_back(cb: CallbackQuery):
+    await admin_list_categories(cb)
 
 # ---------- Просмотр канала (с кнопкой активности) ----------
 @router.callback_query(F.data.startswith("admin_view_"))
@@ -141,7 +190,7 @@ async def adm_view_chan(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],
         [status_btn],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list_back")]
     ])
     await cb.message.edit_text(txt, reply_markup=kb)
     await cb.answer()
@@ -152,6 +201,7 @@ async def toggle_active_cb(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     cid = cb.data.replace("toggle_active_", "")
     new_state = await toggle_channel_active(cid)
+    admin_logger.info(f"Admin {cb.from_user.id} toggled channel {cid} active={new_state}")
     await cb.answer(f"Канал теперь {'активен' if new_state else 'скрыт'}", show_alert=False)
     await adm_view_chan(cb)
 
@@ -194,6 +244,7 @@ async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
     cid = parts[3]
     cat_id = int(parts[4])
     await update_channel(cid, category_id=cat_id)
+    admin_logger.info(f"Admin {cb.from_user.id} updated channel {cid} category to {cat_id}")
     await cb.answer("Категория обновлена", False)
     await adm_view_chan(cb)
     await state.clear()
@@ -202,6 +253,7 @@ async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
 async def e_name(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], name=m.text)
+    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} name")
     await m.answer(f"✅ Название изменено на {m.text}")
     await state.clear()
 
@@ -210,6 +262,7 @@ async def e_price(m: Message, state: FSMContext):
     if not m.text.isdigit(): await m.answer("Введите число"); return
     d = await state.get_data()
     await update_channel(d['ch_id'], price=int(m.text))
+    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} price")
     await m.answer(f"✅ Цена изменена на {m.text}$")
     await state.clear()
 
@@ -218,6 +271,7 @@ async def e_subs(m: Message, state: FSMContext):
     if not m.text.isdigit(): await m.answer("Введите число"); return
     d = await state.get_data()
     await update_channel(d['ch_id'], subs=int(m.text))
+    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} subscribers")
     await m.answer(f"✅ Количество подписчиков изменено на {m.text}")
     await state.clear()
 
@@ -229,6 +283,7 @@ async def e_url(m: Message, state: FSMContext):
         return
     d = await state.get_data()
     await update_channel(d['ch_id'], url=url)
+    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} url")
     await m.answer(f"✅ Ссылка изменена на {url}")
     await state.clear()
 
@@ -236,6 +291,7 @@ async def e_url(m: Message, state: FSMContext):
 async def e_desc(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], desc=m.text)
+    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} description")
     await m.answer("✅ Описание изменено")
     await state.clear()
 
@@ -260,6 +316,7 @@ async def adm_del(cb: CallbackQuery):
     if cid in ch:
         name = ch[cid]['name']
         await delete_channel(cid)
+        admin_logger.info(f"Admin {cb.from_user.id} deleted channel {cid} ({name})")
         await cb.answer(f"✅ Канал {name} удалён", False)
         new_ch = await get_all_channels()
         if not new_ch:
@@ -332,6 +389,7 @@ async def a_desc(m: Message, state: FSMContext):
     new_id = f"channel_{int(time.time())}"
     cat_id = data['category_id']
     await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
+    admin_logger.info(f"Admin {m.from_user.id} added channel {new_id} ({data['name']})")
     cat = await get_category_by_id(cat_id)
     cat_name = cat['display_name'] if cat else ""
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
@@ -379,7 +437,6 @@ async def admin_stats_cb(cb: CallbackQuery):
     await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
     await cb.answer()
 
-# ---------- Обработчики новых кнопок статистики ----------
 @router.callback_query(F.data == "top_channels")
 async def top_channels_cb(cb: CallbackQuery):
     top = await get_top_channels(10)
@@ -394,13 +451,11 @@ async def top_channels_cb(cb: CallbackQuery):
 
 @router.callback_query(F.data == "export_orders")
 async def export_orders_cb(cb: CallbackQuery):
-    # Перенаправляем на функцию экспорта (можно просто вызвать)
-    await export_orders(cb.message)  # передаём объект Message
+    await export_orders(cb.message)
     await cb.answer()
 
-# Вспомогательная функция экспорта, чтобы не дублировать код (вызывается из /export и из кнопки)
 async def export_orders(message: Message):
-    from database import get_orders  # уже импортировано, но на всякий случай
+    from database import get_orders
     if message.from_user.id not in ADMIN_IDS:
         await message.answer("⛔ Нет доступа")
         return
@@ -425,11 +480,11 @@ async def export_orders(message: Message):
         file = FSInputFile(filename)
         await message.answer_document(file, caption="📋 Все заказы")
         os.remove(filename)
+        admin_logger.info(f"Admin {message.from_user.id} exported orders")
     except Exception as e:
         await message.answer(f"❌ Ошибка экспорта: {e}")
         logging.error(f"Export error: {e}")
 
-# Команда /export остаётся для совместимости (перенаправляет на ту же функцию)
 @router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/export")
 async def export_cmd(m: Message):
     await export_orders(m)
@@ -494,6 +549,7 @@ async def quick_add_link_received(m: Message, state: FSMContext):
             count = await m.bot.get_chat_member_count(chat.id)
         except Exception:
             count = 0
+            await m.answer("⚠️ Не удалось получить количество подписчиков. Записано 0.")
         await state.update_data(quick_name=name, quick_subs=count, quick_url=f"https://t.me/{username}")
         await m.answer(f"Канал: {name}\nПодписчиков: {count}\n\nВведите цену (число):")
         await state.set_state(QuickAddStates.waiting_for_price)
@@ -512,6 +568,7 @@ async def quick_add_price_received(m: Message, state: FSMContext):
     cat_id = cats[0]['id'] if cats else None
     new_id = f"channel_{int(time.time())}"
     await add_channel(new_id, data['quick_name'], price, data['quick_subs'], data['quick_url'], "", cat_id)
+    admin_logger.info(f"Admin {m.from_user.id} quick-added channel {new_id}")
     await m.answer(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_keyboard())
     await state.clear()
 
@@ -549,6 +606,7 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
                 new_id = f"channel_{int(time.time())}_{idx}"
                 await add_channel(new_id, name, price, subs, url, desc, cat_id)
                 added += 1
+                admin_logger.info(f"Admin {m.from_user.id} bulk-added channel {new_id}")
             except Exception as e:
                 errors.append(f"{item.get('name', 'неизвестно')}: {e}")
         result = f"✅ Добавлено каналов: {added}"
@@ -576,7 +634,10 @@ async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
 async def adm_orders(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
     ords = await get_orders(20)
-    if not ords: await cb.message.edit_text("Нет заявок", reply_markup=get_main_keyboard(cb.from_user.id)); await cb.answer(); return
+    if not ords:
+        await cb.message.edit_text("Нет заявок", reply_markup=get_admin_keyboard())
+        await cb.answer()
+        return
     await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
     await cb.answer()
 
@@ -659,10 +720,12 @@ async def process_balance_amount(m: Message, state: FSMContext):
     await get_or_create_user(target_id)
     if amount >= 0:
         await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
+        admin_logger.info(f"Admin {m.from_user.id} added {amount}$ to user {target_id}")
         await m.answer(f"✅ Баланс пользователя {target_id} пополнен на {amount}$", reply_markup=get_admin_keyboard())
     else:
         success = await debit_balance(target_id, -amount, None, f"Ручное списание админом {m.from_user.id}")
         if success:
+            admin_logger.info(f"Admin {m.from_user.id} deducted {-amount}$ from user {target_id}")
             await m.answer(f"✅ С баланса пользователя {target_id} списано {-amount}$", reply_markup=get_admin_keyboard())
         else:
             bal = await get_user_balance(target_id)
@@ -727,3 +790,18 @@ async def clear_no(cb: CallbackQuery):
         return
     await cb.message.delete()
     await cb.answer("Очистка отменена")
+
+# ---------- Поиск каналов ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text.startswith("/find_channels"))
+async def find_channels(m: Message):
+    query = m.text.replace("/find_channels", "").strip()
+    if not query:
+        await m.answer("Использование: /find_channels <текст>")
+        return
+    all_ch = await get_all_channels()
+    found = {k: v for k, v in all_ch.items() if query.lower() in v['name'].lower()}
+    if not found:
+        await m.answer("Ничего не найдено.")
+        return
+    kb, page, total = get_admin_list_keyboard(found, 0, category_id="all")
+    await m.answer(f"Результаты поиска «{query}» (страница 1/{total}):", reply_markup=kb)
