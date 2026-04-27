@@ -2,14 +2,18 @@ import json
 import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+BASE_DIR = Path(__file__).resolve().parent
+
 if os.environ.get("DATABASE_PATH"):
-    DB_PATH = os.environ["DATABASE_PATH"]
-elif os.path.exists("channels.db"):
-    DB_PATH = "channels.db"
+    _env_db = Path(os.environ["DATABASE_PATH"])
+    DB_PATH = str(_env_db if _env_db.is_absolute() else BASE_DIR / _env_db)
+elif (BASE_DIR / "channels.db").exists():
+    DB_PATH = str(BASE_DIR / "channels.db")
 else:
-    DB_PATH = "bot.db"
+    DB_PATH = str(BASE_DIR / "bot.db")
 
 
 def _connect():
@@ -103,6 +107,14 @@ async def _ensure_default_category(cur: sqlite3.Cursor):
                 (first_id,),
             )
 
+
+
+
+
+async def _ensure_default_category_with_connection(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    await _ensure_default_category(cur)
+    conn.commit()
 
 
 async def init_db():
@@ -431,8 +443,14 @@ async def get_all_categories():
     cur = conn.cursor()
     cur.execute("SELECT id, name, COALESCE(display_name, name) FROM categories ORDER BY id")
     rows = cur.fetchall()
-    conn.close()
 
+    if not rows:
+        await _ensure_default_category_with_connection(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, COALESCE(display_name, name) FROM categories ORDER BY id")
+        rows = cur.fetchall()
+
+    conn.close()
     return [{"id": r[0], "name": r[1], "display_name": r[2]} for r in rows]
 
 
