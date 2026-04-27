@@ -1,477 +1,359 @@
+import asyncpg
 import json
-import sqlite3
-from datetime import datetime
-from typing import Any
+import os
+import asyncio
 
-DB_PATH = "bot.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+pool = None
 
+# ---------- Хранилище каналов в памяти (для стабильного чтения) ----------
+_channels_dict = {}
 
-def _connect():
-    return sqlite3.connect(DB_PATH)
+async def _load_channels_from_db():
+    """Загружает все каналы из БД в глобальный словарь с несколькими попытками."""
+    global _channels_dict
+    for attempt in range(5):
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id FROM channels')
+                ch = {}
+                for r in rows:
+                    ch[r['id']] = {
+                        "name": r['name'],
+                        "price": r['price'],
+                        "subscribers": r['subscribers'],
+                        "url": r['url'],
+                        "description": r['description'] or "",
+                        "category_id": r['category_id']
+                    }
+                _channels_dict = ch
+                print(f"[MEM] Каналы загружены в память: {len(ch)}")
+                return True
+        except Exception as e:
+            print(f"[MEM] Ошибка загрузки каналов (попытка {attempt+1}): {e}")
+            await asyncio.sleep(1)
+    print("[MEM] Не удалось загрузить каналы после 5 попыток")
+    return False
 
-
-def _table_columns(cur: sqlite3.Cursor, table: str) -> set[str]:
-    cur.execute(f"PRAGMA table_info({table})")
-    return {row[1] for row in cur.fetchall()}
-
-
-def _channel_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    return {
-        "id": row[0],
-        "category_id": row[1],
-        "name": row[2],
-        "url": row[3],
-        "subscribers": row[4],
-        "price": row[5],
-        "description": row[6] or "",
-    }
-
-
-def _order_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
-    items_raw = row[3] or "[]"
-    try:
-        cart = json.loads(items_raw)
-    except Exception:
-        cart = []
-
-    return {
-        "id": row[0],
-        "user_id": row[1],
-        "username": row[2],
-        "cart": cart,
-        "items": cart,
-        "total": row[4],
-        "budget": row[5],
-        "contact": row[6],
-        "status": row[7],
-        "created_at": row[8],
-    }
-
-
+# ---------- Инициализация БД ----------
 async def init_db():
-    conn = _connect()
-    cur = conn.cursor()
+    global pool
+    if pool is not None:
+        return
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
 
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        balance REAL DEFAULT 0,
-        daily_limit INTEGER DEFAULT 5,
-        daily_used INTEGER DEFAULT 0,
-        last_reset TEXT
-    )
-    """
-    )
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS categories (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS channels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                subscribers INTEGER NOT NULL,
+                url TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                username TEXT,
+                cart TEXT,
+                total INTEGER,
+                budget INTEGER,
+                contact TEXT,
+                status TEXT DEFAULT 'в обработке',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                balance INTEGER DEFAULT 0,
+                daily_limit INTEGER DEFAULT 3,
+                daily_orders_count INTEGER DEFAULT 0,
+                last_order_date DATE DEFAULT CURRENT_DATE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT REFERENCES users(user_id),
+                type TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                order_id INTEGER REFERENCES orders(id),
+                description TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )''')
+        await _ensure_default_categories(conn)
 
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS channels (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        category_id INTEGER,
-        name TEXT,
-        url TEXT,
-        subscribers INTEGER DEFAULT 0,
-        price REAL DEFAULT 0,
-        description TEXT
-    )
-    """
-    )
+    # Первичная загрузка каналов в память
+    await _load_channels_from_db()
 
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS categories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        display_name TEXT
-    )
-    """
-    )
-
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        username TEXT,
-        items TEXT,
-        total REAL,
-        budget REAL,
-        contact TEXT,
-        status TEXT,
-        created_at TEXT
-    )
-    """
-    )
-
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS balance_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        amount REAL,
-        description TEXT,
-        created_at TEXT
-    )
-    """
-    )
-
-    category_cols = _table_columns(cur, "categories")
-    if "display_name" not in category_cols:
-        cur.execute("ALTER TABLE categories ADD COLUMN display_name TEXT")
-        cur.execute("UPDATE categories SET display_name = name WHERE display_name IS NULL")
-
-    conn.commit()
-    conn.close()
-
-
-async def get_or_create_user(user_id: int, username: str = None):
-    conn = _connect()
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT user_id, username, balance, daily_limit, daily_used, last_reset FROM users WHERE user_id=?",
-        (user_id,),
-    )
-    row = cur.fetchone()
-
-    if not row:
-        now = str(datetime.now())
-        cur.execute(
-            """
-            INSERT INTO users (user_id, username, balance, daily_limit, daily_used, last_reset)
-            VALUES (?, ?, 0, 5, 0, ?)
-            """,
-            (user_id, username, now),
+async def _ensure_default_categories(conn):
+    exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
+    if exists == 0:
+        default_cats = [
+            ('news', 'Новостные'),
+            ('trading', 'Торговые'),
+            ('analytics', 'Аналитика'),
+            ('nft', 'NFT'),
+            ('memes', 'Мемкоины'),
+            ('defi', 'DeFi')
+        ]
+        await conn.executemany(
+            'INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
+            default_cats
         )
-        conn.commit()
-        row = (user_id, username, 0, 5, 0, now)
 
-    conn.close()
-    return {
-        "user_id": row[0],
-        "username": row[1],
-        "balance": row[2],
-        "daily_limit": row[3],
-        "daily_used": row[4],
-        "last_reset": row[5],
-    }
+async def close_db():
+    global pool
+    if pool:
+        await pool.close()
+        pool = None
 
+# ---------- Пользователи и баланс ----------
+async def get_or_create_user(user_id: int, username: str = None):
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+        if not user:
+            await conn.execute(
+                'INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date) VALUES ($1, $2, 0, 3, 0, CURRENT_DATE)',
+                user_id, username
+            )
+            return {'user_id': user_id, 'username': username, 'balance': 0, 'daily_limit': 3, 'daily_orders_count': 0}
+        if username and user['username'] != username:
+            await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
+        return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance'],
+                'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count']}
 
-async def get_user_balance(user_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else 0
+async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'пополнение', $2, $3)",
+                user_id, amount, description
+            )
 
+async def debit_balance(user_id: int, amount: int, order_id: int, description: str = "Списание за заказ"):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cur_balance = await conn.fetchval(
+                'SELECT balance FROM users WHERE user_id = $1 FOR UPDATE', user_id
+            )
+            if cur_balance is None or cur_balance < amount:
+                return False
+            await conn.execute(
+                'UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'списание', $2, $3, $4)",
+                user_id, amount, order_id, description
+            )
+            return True
 
-async def update_user_balance(user_id: int, amount: float, description: str = ""):
-    await get_or_create_user(user_id)
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
-    cur.execute(
-        """
-        INSERT INTO balance_log (user_id, amount, description, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (user_id, amount, description or "Пополнение/изменение баланса", str(datetime.now())),
-    )
-    conn.commit()
-    conn.close()
+async def return_balance(user_id: int, amount: int, order_id: int, description: str = "Возврат за отмену заказа"):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                'UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2',
+                amount, user_id
+            )
+            await conn.execute(
+                "INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'возврат', $2, $3, $4)",
+                user_id, amount, order_id, description
+            )
 
+async def get_user_balance(user_id):
+    async with pool.acquire() as conn:
+        return await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id) or 0
 
-async def update_balance(user_id: int, amount: float):
-    await update_user_balance(user_id, amount, "Пополнение через платежный шлюз")
+async def get_user_transactions(user_id, limit=10):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT type, amount, description, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+            user_id, limit
+        )
+        return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
 
-
-async def debit_balance(user_id: int, amount: float, order_id=None, description=""):
-    conn = _connect()
-    cur = conn.cursor()
-
-    cur.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    bal = cur.fetchone()
-    if not bal or bal[0] < amount:
-        conn.close()
-        return False
-
-    cur.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, user_id))
-    note = description or (f"Оплата заказа #{order_id}" if order_id else "Списание")
-    cur.execute(
-        """
-        INSERT INTO balance_log (user_id, amount, description, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (user_id, -amount, note, str(datetime.now())),
-    )
-
-    conn.commit()
-    conn.close()
-    return True
-
-
-async def check_daily_order_limit(user_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-
-    cur.execute("SELECT daily_used, daily_limit FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-
-    if not row:
-        conn.close()
+# ---------- Дневной лимит ----------
+async def check_daily_order_limit(user_id: int) -> bool:
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+        if not user:
+            return False
+        today = await conn.fetchval('SELECT CURRENT_DATE')
+        if user['last_order_date'] != today:
+            await conn.execute('UPDATE users SET daily_orders_count = 0, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
+            count = 0
+        else:
+            count = user['daily_orders_count']
+        if count >= user['daily_limit']:
+            return False
+        await conn.execute('UPDATE users SET daily_orders_count = daily_orders_count + 1, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
         return True
 
-    used, limit = row
-
-    if used >= limit:
-        conn.close()
-        return False
-
-    cur.execute("UPDATE users SET daily_used = daily_used + 1 WHERE user_id=?", (user_id,))
-    conn.commit()
-    conn.close()
-    return True
-
-
 async def get_user_daily_info(user_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT daily_used, daily_limit FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return {"used": 0, "limit": 5}
-    return {"used": row[0], "limit": row[1]}
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+        if not row:
+            return 0, 0
+        today = await conn.fetchval('SELECT CURRENT_DATE')
+        if row['last_order_date'] != today:
+            used = 0
+        else:
+            used = row['daily_orders_count']
+        return row['daily_limit'], used
 
-
-async def get_channels(category_id: int = None):
-    conn = _connect()
-    cur = conn.cursor()
-
-    if category_id:
-        cur.execute("SELECT * FROM channels WHERE category_id=? ORDER BY id DESC", (category_id,))
-    else:
-        cur.execute("SELECT * FROM channels ORDER BY id DESC")
-
-    rows = cur.fetchall()
-    conn.close()
-
-    result = {}
-    for r in rows:
-        channel = _channel_from_row(r)
-        result[str(channel["id"])] = channel
-    return result
-
-
-get_all_channels = get_channels
-
-
-async def get_channel(channel_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM channels WHERE id=?", (channel_id,))
-    r = cur.fetchone()
-    conn.close()
-    return _channel_from_row(r) if r else None
-
-
-async def add_channel(_external_id, name, price, subscribers, url, description, category_id=None):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO channels (category_id, name, url, subscribers, price, description)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (category_id, name, url, int(subscribers or 0), float(price or 0), description or ""),
-    )
-    conn.commit()
-    inserted_id = cur.lastrowid
-    conn.close()
-    return inserted_id
-
-
-async def delete_channel(channel_id):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM channels WHERE id=?", (int(channel_id),))
-    conn.commit()
-    deleted = cur.rowcount
-    conn.close()
-    return deleted > 0
-
-
-async def update_channel(channel_id, **kwargs):
-    field_map = {
-        "name": "name",
-        "price": "price",
-        "subs": "subscribers",
-        "subscribers": "subscribers",
-        "url": "url",
-        "desc": "description",
-        "description": "description",
-        "category_id": "category_id",
-    }
-    updates = []
-    values = []
-
-    for key, value in kwargs.items():
-        db_field = field_map.get(key)
-        if not db_field:
-            continue
-        updates.append(f"{db_field} = ?")
-        values.append(value)
-
-    if not updates:
-        return False
-
-    values.append(int(channel_id))
-
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE channels SET {', '.join(updates)} WHERE id = ?", tuple(values))
-    conn.commit()
-    changed = cur.rowcount
-    conn.close()
-    return changed > 0
-
-
+# ---------- Категории ----------
 async def get_all_categories():
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, COALESCE(display_name, name) FROM categories ORDER BY id")
-    rows = cur.fetchall()
-    conn.close()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
+    if not rows:
+        async with pool.acquire() as conn:
+            await _ensure_default_categories(conn)
+            rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
+    return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
 
-    return [{"id": r[0], "name": r[1], "display_name": r[2]} for r in rows]
+async def add_category(name, display_name):
+    async with pool.acquire() as conn:
+        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', name, display_name)
 
+async def delete_category(cat_id):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
+            await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
+    await _load_channels_from_db()
 
-get_categories = get_all_categories
+async def get_category_by_id(cat_id):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
+        return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
 
+# ---------- Каналы (из памяти) ----------
+async def get_all_channels(category_id=None):
+    global _channels_dict
+    if not _channels_dict:
+        await _load_channels_from_db()
+    if category_id is not None:
+        return {k: v for k, v in _channels_dict.items() if v.get('category_id') == category_id}
+    return _channels_dict
 
-async def add_category(name: str, display_name: str):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO categories (name, display_name) VALUES (?, ?)",
-        (name.strip(), display_name.strip()),
-    )
-    conn.commit()
-    inserted_id = cur.lastrowid
-    conn.close()
-    return inserted_id
+# Алиасы для совместимости
+get_channels = get_all_channels
+get_channel = lambda cid: _channels_dict.get(str(cid))
 
+async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO channels (id, name, price, subscribers, url, description, category_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id) DO UPDATE SET name=$2, price=$3, subscribers=$4, url=$5, description=$6, category_id=$7
+        ''', ch_id, name, price, subscribers, url, desc, category_id)
+    _channels_dict[ch_id] = {
+        "name": name, "price": price, "subscribers": subscribers,
+        "url": url, "description": desc or "", "category_id": category_id
+    }
 
-async def delete_category(cat_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM categories WHERE id=?", (cat_id,))
-    conn.commit()
-    deleted = cur.rowcount
-    conn.close()
-    return deleted > 0
+async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category_id=None):
+    async with pool.acquire() as conn:
+        if name is not None:
+            await conn.execute('UPDATE channels SET name = $1 WHERE id = $2', name, ch_id)
+            if ch_id in _channels_dict: _channels_dict[ch_id]['name'] = name
+        if price is not None:
+            await conn.execute('UPDATE channels SET price = $1 WHERE id = $2', price, ch_id)
+            if ch_id in _channels_dict: _channels_dict[ch_id]['price'] = price
+        if subs is not None:
+            await conn.execute('UPDATE channels SET subscribers = $1 WHERE id = $2', subs, ch_id)
+            if ch_id in _channels_dict: _channels_dict[ch_id]['subscribers'] = subs
+        if url is not None:
+            await conn.execute('UPDATE channels SET url = $1 WHERE id = $2', url, ch_id)
+            if ch_id in _channels_dict: _channels_dict[ch_id]['url'] = url
+        if desc is not None:
+            await conn.execute('UPDATE channels SET description = $1 WHERE id = $2', desc, ch_id)
+            if ch_id in _channels_dict: _channels_dict[ch_id]['description'] = desc
+        if category_id is not None:
+            await conn.execute('UPDATE channels SET category_id = $1 WHERE id = $2', category_id, ch_id)
+            if ch_id in _channels_dict: _channels_dict[ch_id]['category_id'] = category_id
 
+async def delete_channel(ch_id):
+    async with pool.acquire() as conn:
+        await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
+    if ch_id in _channels_dict:
+        del _channels_dict[ch_id]
 
-async def get_category_by_id(cat_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, COALESCE(display_name, name) FROM categories WHERE id=?", (cat_id,))
-    r = cur.fetchone()
-    conn.close()
+# ---------- Заказы ----------
+async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cart_json = json.dumps(cart)
+            oid = await conn.fetchval(
+                'INSERT INTO orders (user_id, username, cart, total, budget, contact, status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+                user_id, username, cart_json, total, budget, contact, status
+            )
+            return oid
 
-    if not r:
+async def get_orders(limit=20):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT id, user_id, username, cart, total, budget, contact, status, created_at FROM orders ORDER BY created_at DESC LIMIT $1',
+            limit
+        )
+        return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'],
+                 "cart": json.loads(r['cart']), "total": r['total'], "budget": r['budget'],
+                 "contact": r['contact'], "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+
+async def get_orders_by_user(user_id, limit=5, only_completed=False):
+    async with pool.acquire() as conn:
+        if only_completed:
+            rows = await conn.fetch(
+                'SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 AND status IN ($2, $3) ORDER BY created_at DESC LIMIT $4',
+                user_id, 'оплачена', 'выполнена', limit
+            )
+        else:
+            rows = await conn.fetch(
+                'SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
+                user_id, limit
+            )
+        return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']),
+                 "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+
+async def update_order_status(order_id, new_status):
+    async with pool.acquire() as conn:
+        await conn.execute('UPDATE orders SET status = $1 WHERE id = $2', new_status, order_id)
+
+async def get_order_by_id(order_id):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow('SELECT id, user_id, username, total, status, cart FROM orders WHERE id = $1', order_id)
+        if r:
+            return {"id": r['id'], "user_id": r['user_id'], "username": r['username'], "total": r['total'],
+                    "status": r['status'], "cart": json.loads(r['cart'])}
         return None
 
-    return {"id": r[0], "name": r[1], "display_name": r[2]}
-
-
-async def save_order(user_id, username, cart, total, budget, contact, status="new"):
-    conn = _connect()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO orders (user_id, username, items, total, budget, contact, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            username,
-            json.dumps(cart, ensure_ascii=False),
-            total,
-            budget,
-            contact,
-            status,
-            str(datetime.now()),
-        ),
-    )
-
-    conn.commit()
-    order_id = cur.lastrowid
-    conn.close()
-    return order_id
-
-
-async def get_orders_by_user(user_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC", (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return [_order_from_row(r) for r in rows]
-
-
-async def get_orders(limit: int | None = None):
-    conn = _connect()
-    cur = conn.cursor()
-    if limit:
-        cur.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (int(limit),))
-    else:
-        cur.execute("SELECT * FROM orders ORDER BY id DESC")
-    rows = cur.fetchall()
-    conn.close()
-    return [_order_from_row(r) for r in rows]
-
+# ---------- Очистка заказов ----------
+async def clear_non_successful_orders():
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM transactions WHERE order_id IN (SELECT id FROM orders WHERE status IN ('в обработке', 'отменена'))"
+            )
+            await conn.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
 
 async def clear_all_orders():
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM orders")
-    conn.commit()
-    conn.close()
-    return True
-
-
-async def clear_non_successful_orders():
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
-    conn.commit()
-    conn.close()
-    return True
-
-
-async def get_order_by_id(order_id: int):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE id=?", (order_id,))
-    r = cur.fetchone()
-    conn.close()
-    return _order_from_row(r) if r else None
-
-
-async def update_order_status(order_id: int, status: str):
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
-    conn.commit()
-    conn.close()
-
-
-async def return_balance(user_id: int, amount: float, order_id=None, description=""):
-    note = description or (f"Возврат за заказ #{order_id}" if order_id else "Возврат")
-    await update_user_balance(user_id, amount, note)
-    return True
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
+            await conn.execute("DELETE FROM orders")
