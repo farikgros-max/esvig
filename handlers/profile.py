@@ -12,7 +12,7 @@ from states import OrderForm, WithdrawStates
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
                    CHECK_PAYMENT_MESSAGE, WITHDRAW_MIN)
 from keyboards import (get_profile_keyboard, get_main_keyboard, cancel_keyboard)
-from config import MIN_DEPOSIT, PAID_BTN_URL, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, ADMIN_IDS
+from config import MIN_DEPOSIT, PAID_BTN_URL, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, ADMIN_IDS, ORDER_CHANNEL_ID
 
 router = Router()
 
@@ -120,7 +120,6 @@ async def withdraw_amount(m: Message, state: FSMContext):
 async def withdraw_to_balance(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     amount = data['amount']
-    # Просто возвращаем на баланс (реферальные бонусы уже на балансе, так что фактически ничего не меняется)
     await cb.message.edit_text(
         f"✅ {amount}$ зачислено на ваш баланс.",
         reply_markup=get_profile_keyboard()
@@ -149,7 +148,7 @@ async def withdraw_crypto(cb: CallbackQuery, state: FSMContext):
     order_id = await save_order(
         cb.from_user.id,
         username,
-        [],  # пустая корзина
+        [],
         amount,
         amount,
         f"Вывод реферальных бонусов на криптокошелёк. Связь: @{username}",
@@ -165,6 +164,17 @@ async def withdraw_crypto(cb: CallbackQuery, state: FSMContext):
                 f"Пользователь: @{username} ({cb.from_user.id})\n"
                 f"Сумма: {amount}$\n"
                 f"Контакт: @{username}"
+            )
+        except:
+            pass
+    # Уведомление в канал заказов
+    if ORDER_CHANNEL_ID:
+        try:
+            await cb.bot.send_message(
+                ORDER_CHANNEL_ID,
+                f"💰 Новая заявка на вывод #{order_id}\n"
+                f"Пользователь: @{username}\n"
+                f"Сумма: {amount}$"
             )
         except:
             pass
