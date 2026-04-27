@@ -17,7 +17,7 @@ router = Router()
 
 # ---------------- PROFILE ----------------
 
-@router.message(F.text == "👤 Профиль")
+@router.message(F.text == "👤 Мой профиль")
 async def profile(m: Message):
     user = await get_or_create_user(m.from_user.id, m.from_user.username)
 
