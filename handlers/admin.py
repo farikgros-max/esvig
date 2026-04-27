@@ -4,6 +4,7 @@ import time
 import asyncpg
 import json
 import logging
+import re
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -112,23 +113,13 @@ async def adm_list(cb: CallbackQuery):
     await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
     await cb.answer()
 
-# ---------- Просмотр канала (с устойчивостью к неполной загрузке) ----------
 @router.callback_query(F.data.startswith("admin_view_"))
 async def adm_view_chan(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    ch = await get_all_channels()
     cid = cb.data.replace("admin_view_", "")
-    info = None
-    # Даём до 3 быстрых попыток получить данные канала
-    for _ in range(3):
-        ch = await get_all_channels()
-        info = ch.get(cid)
-        if info:
-            break
-        await asyncio.sleep(0.3)
-    if not info:
-        await cb.answer("Канал не найден", True)
-        return
-
+    info = ch.get(cid)
+    if not info: await cb.answer("Канал не найден", True); return
     cat_name = ""
     if info.get('category_id'):
         cat = await get_category_by_id(info['category_id'])
@@ -256,7 +247,7 @@ async def adm_del(cb: CallbackQuery):
     else:
         await cb.answer("Канал не найден", True)
 
-# ---------- Добавление канала ----------
+# ---------- Добавление канала (стандартное) ----------
 @router.callback_query(F.data == "admin_add")
 async def adm_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
@@ -323,7 +314,29 @@ async def a_desc(m: Message, state: FSMContext):
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
     await state.clear()
 
-# ---------- Быстрое добавление канала ----------
+# ========== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ ==========
+
+# ---------- Просмотр логов ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
+async def show_logs(m: Message):
+    try:
+        if not os.path.exists('bot_errors.log'):
+            await m.answer("Файл логов не найден.")
+            return
+        with open('bot_errors.log', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        last_lines = lines[-20:] if len(lines) >= 20 else lines
+        if not last_lines:
+            await m.answer("Логи пусты.")
+            return
+        text = "📄 Последние записи в логах:\n" + "".join(last_lines)
+        if len(text) > 4000:
+            text = text[-4000:]
+        await m.answer(text)
+    except Exception as e:
+        await m.answer(f"Ошибка при чтении логов: {e}")
+
+# ---------- Быстрое добавление канала (исправлено) ----------
 @router.callback_query(F.data == "quick_add")
 async def quick_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
@@ -339,17 +352,22 @@ async def quick_add_start(cb: CallbackQuery, state: FSMContext):
 @router.message(QuickAddStates.waiting_for_channel_link)
 async def quick_add_link_received(m: Message, state: FSMContext):
     url = m.text.strip()
-    if not url.startswith("https://t.me/"):
-        await m.answer("Ссылка должна начинаться с https://t.me/")
+    # Извлекаем username/ID из ссылки
+    match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
+    if not match:
+        await m.answer("Не удалось распознать ссылку. Убедитесь, что формат верный: https://t.me/username")
         return
+    username = match.group(1)
+    # Пытаемся получить информацию о чате
     try:
-        chat = await m.bot.get_chat(url)
-        name = chat.title or "Без названия"
+        chat = await m.bot.get_chat(f"@{username}" if not username.startswith("@") else username)
+        name = chat.title or chat.full_name or "Без названия"
+        # Количество подписчиков
         try:
             count = await m.bot.get_chat_member_count(chat.id)
         except Exception:
             count = 0
-        await state.update_data(quick_name=name, quick_subs=count, quick_url=url)
+        await state.update_data(quick_name=name, quick_subs=count, quick_url=f"https://t.me/{username}")
         await m.answer(f"Канал: {name}\nПодписчиков: {count}\n\nВведите цену (число):")
         await state.set_state(QuickAddStates.waiting_for_price)
     except Exception as e:
@@ -602,3 +620,36 @@ async def clear_no(cb: CallbackQuery):
         return
     await cb.message.delete()
     await cb.answer("Очистка отменена")
+
+# ========== НОВАЯ КОМАНДА: /update_subs ==========
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/update_subs")
+async def update_subs_cmd(m: Message):
+    await m.answer("⏳ Обновляю подписчиков для всех каналов...")
+    channels = await get_all_channels()
+    if not channels:
+        await m.answer("Нет каналов для обновления.")
+        return
+    updated = 0
+    failed = 0
+    for cid, info in channels.items():
+        # Извлекаем username из URL (если есть)
+        url = info.get('url', '')
+        match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
+        if not match:
+            failed += 1
+            continue
+        username = match.group(1)
+        try:
+            chat = await m.bot.get_chat(f"@{username}" if not username.startswith("@") else username)
+            new_name = chat.title or chat.full_name or info['name']
+            try:
+                new_subs = await m.bot.get_chat_member_count(chat.id)
+            except Exception:
+                new_subs = info['subscribers']  # оставляем старые, если не удалось получить
+            await update_channel(cid, name=new_name, subs=new_subs)
+            updated += 1
+        except Exception as e:
+            print(f"Failed to update {url}: {e}")
+            failed += 1
+        await asyncio.sleep(0.5)  # чтобы не упереться в лимиты Telegram API
+    await m.answer(f"✅ Обновлено: {updated} каналов\n❌ Не удалось: {failed}")
