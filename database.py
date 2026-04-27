@@ -164,7 +164,6 @@ async def auto_process_orders(bot):
             )
         except Exception as e:
             print(f"[AUTO] Ошибка автообработки: {e}")
-        # Проверяем раз в 15 минут
         await asyncio.sleep(900)
 
 # ---------- Пользователи и баланс ----------
@@ -182,9 +181,18 @@ async def get_or_create_user(user_id: int, username: str = None, inviter_id: int
                 'daily_orders_count': 0, 'referral_code': code, 'inviter_id': inviter_id}
     if username and user['username'] != username:
         await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
+    # Если у существующего пользователя нет реферального кода – генерируем
+    referral_code = user['referral_code']
+    if not referral_code:
+        referral_code = f"REF{user_id}"
+        await conn.execute('UPDATE users SET referral_code = $1 WHERE user_id = $2', referral_code, user_id)
     return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance'],
             'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count'],
-            'referral_code': user['referral_code'], 'inviter_id': user['inviter_id']}
+            'referral_code': referral_code, 'inviter_id': user['inviter_id']}
+
+async def update_user_referral_code(user_id: int, code: str):
+    conn = await get_connection()
+    await conn.execute('UPDATE users SET referral_code = $1 WHERE user_id = $2', code, user_id)
 
 async def get_user_by_referral_code(code: str):
     conn = await get_connection()
