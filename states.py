@@ -36,3 +36,7 @@ class MassAddStates(StatesGroup):
 class QuickAddStates(StatesGroup):
     waiting_for_channel_link = State()
     waiting_for_price = State()
+
+class WithdrawStates(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_method = State()
