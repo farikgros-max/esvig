@@ -69,26 +69,33 @@ async def referral_program(cb: CallbackQuery):
     stats = await get_referral_stats(cb.from_user.id)
     bot = await cb.bot.get_me()
     link = f"https://t.me/{bot.username}?start=ref_{code}"
+
+    # Формируем описание уровня и прогресс
+    level_text = f"{stats['level']} (до {stats['percent']}%)"
+    progress = ""
+    if stats['next_level']:
+        progress = f"До уровня {stats['next_level']}: {stats['needed']} чел."
+    else:
+        progress = "Максимальный уровень!"
+
     text = (
         f"👥 Реферальная программа\n\n"
         f"🔗 Ваша ссылка:\n{link}\n\n"
-        f"👥 Приглашено всего: {stats['invited']}\n"
-        f"   ├ 1-й уровень (4%): {stats.get('level1', 0)} чел.\n"
-        f"   ├ 2-й уровень (2%): {stats.get('level2', 0)} чел.\n"
-        f"   └ 3-й уровень (1%): {stats.get('level3', 0)} чел.\n\n"
-        f"💰 Заработано за всё время: {stats['bonuses']}$\n"
-        f"💳 Доступно к выводу: {user['balance']}$\n\n"
-        "Приглашайте друзей и получайте до 4% от их заказов!"
+        f"👥 Приглашено: {stats['invited']}\n"
+        f"📈 Ваш уровень: {level_text}\n"
+        f"   ├ 0-10 чел. → 1%\n"
+        f"   ├ 11-50 чел. → 2%\n"
+        f"   └ 51+ чел. → 3.5%\n\n"
+        f"💰 Заработано: {stats['bonuses']}$\n"
+        f"💳 Доступно к выводу: {user['balance']}$\n"
+        f"{progress}\n\n"
+        "Приглашайте друзей и получайте бонусы с их заказов!"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw_start"),
          InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
     ])
     await cb.message.edit_text(text, reply_markup=kb)
-    await cb.answer()
-@router.callback_query(F.data == "back_to_profile")
-async def back_to_profile(cb: CallbackQuery):
-    await profile(cb.message)
     await cb.answer()
 
 # ---------- Вывод средств ----------
