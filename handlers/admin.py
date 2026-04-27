@@ -1,5 +1,4 @@
 import os, asyncio, time, asyncpg, json, logging, re
-from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -416,6 +415,26 @@ async def show_logs(m: Message):
         await m.answer(text)
     except Exception as e:
         await m.answer(f"Ошибка при чтении логов: {e}")
+
+# ---------- Просмотр логов действий администратора ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/admin_logs")
+async def show_admin_logs(m: Message):
+    try:
+        if not os.path.exists('admin_actions.log'):
+            await m.answer("Файл логов администратора не найден.")
+            return
+        with open('admin_actions.log', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        last_lines = lines[-15:] if len(lines) >= 15 else lines
+        if not last_lines:
+            await m.answer("Логи администратора пусты.")
+            return
+        text = "📄 Последние действия администратора:\n" + "".join(last_lines)
+        if len(text) > 4000:
+            text = text[-4000:]
+        await m.answer(text)
+    except Exception as e:
+        await m.answer(f"Ошибка при чтении логов администратора: {e}")
 
 # ---------- Статистика (общая) ----------
 @router.callback_query(F.data == "admin_stats")
