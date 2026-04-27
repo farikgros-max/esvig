@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import (BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY,
                     WEBHOOK_URL, SECRET_TOKEN, CHANNEL_ID, ORDER_CHANNEL_ID)
-from database import init_db, update_user_balance, auto_process_orders
+from database import init_db, update_user_balance, auto_process_orders, get_connection, close_db
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
 
 # Импорт роутеров
@@ -22,10 +22,12 @@ from handlers.admin import router as admin_router
 from handlers.info import router as info_router
 from handlers.referral import router as referral_router
 
+# Логирование с ротацией (ограничиваем размер файла)
+from logging.handlers import RotatingFileHandler
 logging.basicConfig(
-    filename='bot_errors.log',
+    handlers=[RotatingFileHandler('bot_errors.log', maxBytes=1_000_000, backupCount=3)],
     level=logging.ERROR,
-    format='%(asctime)s %(levelname)s:%(message)s'
+    format='%(asctime)s %(levelname)s %(name)s:%(message)s'
 )
 
 # Инициализация бота
@@ -56,6 +58,29 @@ async def startup():
     except Exception:
         pass
     print("Бот готов (Long Polling)")
+
+# ---------- Фоновая проверка здоровья БД ----------
+async def db_health_check():
+    """Проверяет соединение с БД каждые 5 минут."""
+    while True:
+        try:
+            conn = await get_connection()
+            await conn.execute('SELECT 1')
+        except Exception as e:
+            print(f"[HEALTH] Проблема с БД: {e}")
+            await close_db()
+        await asyncio.sleep(300)
+
+# Команда /ping
+from aiogram.filters import Command
+@dp_instance.message(Command("ping"))
+async def ping(m: Message):
+    try:
+        conn = await get_connection()
+        await conn.execute('SELECT 1')
+        await m.answer("🟢 Бот работает, БД доступна")
+    except Exception:
+        await m.answer("🔴 Проблема с базой данных")
 
 # Платёжные вебхуки (без изменений)
 async def cryptobot_handler(request):
@@ -114,8 +139,9 @@ async def xrocket_handler(request):
 
 async def main():
     await startup()
-    # Запускаем фоновую задачу для автоматической обработки заказов
+    # Фоновые задачи
     asyncio.create_task(auto_process_orders(bot_instance))
+    asyncio.create_task(db_health_check())
     aio_app = web.Application()
     aio_app.router.add_post('/cryptobot', cryptobot_handler)
     aio_app.router.add_post('/xrocket', xrocket_handler)
