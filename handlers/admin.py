@@ -1,4 +1,4 @@
-import os, asyncio, time, asyncpg, json, logging, re
+import os, asyncio, json, logging, re
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -19,7 +19,8 @@ from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_re
                        get_categories_admin_keyboard, get_category_actions_keyboard,
                        get_category_selection_keyboard, cancel_keyboard, get_main_keyboard,
                        get_admin_categories_keyboard, get_confirm_delete_category_keyboard)
-from config import ADMIN_IDS, ORDER_CHANNEL_ID
+from config import ORDER_CHANNEL_ID
+from utils import is_admin, admin_only_message, admin_only_callback, log_admin_action
 
 router = Router()
 admin_logger = logging.getLogger('admin_actions')
@@ -35,41 +36,46 @@ class AdminSupportStates(StatesGroup):
 # ---------- Вход в админ‑панель ----------
 @router.message(F.text == "🔑 Админ‑панель")
 async def admin_panel_msg(m: Message):
-    if m.from_user.id in ADMIN_IDS:
-        await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
-    else:
-        await m.answer("Нет прав")
+    if not await admin_only_message(m):
+        return
+    await m.answer("👑 Админ‑панель", reply_markup=get_admin_keyboard())
 
 # ---------- Отмена и возврат ----------
 @router.callback_query(F.data == "cancel_add_channel")
 async def cancel_add_channel(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", show_alert=True); return
+    if not await admin_only_callback(cb):
+        return
     await state.clear()
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
     await cb.answer()
 
 @router.callback_query(F.data == "admin_back")
 async def adm_back(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
     await cb.answer()
 
 # ---------- Управление категориями с подтверждением удаления ----------
 @router.callback_query(F.data == "admin_categories")
 async def admin_categories_menu(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     await cb.message.edit_text("🏷 Управление категориями", reply_markup=await get_categories_admin_keyboard(get_all_categories))
     await cb.answer()
 
 @router.callback_query(F.data == "admin_add_category")
 async def admin_add_category_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     await cb.message.edit_text("Введите **короткое имя** категории (на английском, например 'mining'):", parse_mode="Markdown")
     await state.set_state(AddCategoryStates.waiting_for_name)
     await cb.answer()
 
 @router.message(AddCategoryStates.waiting_for_name)
 async def add_cat_name(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     name = m.text.strip()
     if not name:
         await m.answer("Имя не может быть пустым")
@@ -80,6 +86,8 @@ async def add_cat_name(m: Message, state: FSMContext):
 
 @router.message(AddCategoryStates.waiting_for_display_name)
 async def add_cat_display(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     data = await state.get_data()
     name = data['name']
     display = m.text.strip()
@@ -87,13 +95,14 @@ async def add_cat_display(m: Message, state: FSMContext):
         await m.answer("Название не может быть пустым")
         return
     await add_category(name, display)
-    admin_logger.info(f"Admin {m.from_user.id} added category '{name}'")
+    log_admin_action(m.from_user.id, f"added category '{name}'")
     await m.answer(f"✅ Категория '{display}' добавлена", reply_markup=get_admin_keyboard())
     await state.clear()
 
 @router.callback_query(F.data.startswith("admin_category_"))
 async def admin_category_detail(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cat_id = int(cb.data.split("_")[2])
     cat = await get_category_by_id(cat_id)
     if not cat:
@@ -107,7 +116,8 @@ async def admin_category_detail(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("confirm_delete_category_"))
 async def confirm_delete_category(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cat_id = int(cb.data.split("_")[-1])
     cat = await get_category_by_id(cat_id)
     if not cat:
@@ -121,23 +131,26 @@ async def confirm_delete_category(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("exec_delete_category_"))
 async def exec_delete_category(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cat_id = int(cb.data.split("_")[-1])
     await delete_category(cat_id)
-    admin_logger.info(f"Admin {cb.from_user.id} deleted category {cat_id}")
+    log_admin_action(cb.from_user.id, f"deleted category {cat_id}")
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
 # ---------- Список каналов с выбором категории ----------
 @router.callback_query(F.data == "admin_list")
 async def admin_list_categories(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     await cb.message.edit_text("Выберите категорию:", reply_markup=await get_admin_categories_keyboard(get_all_categories))
     await cb.answer()
 
 @router.callback_query(F.data.startswith("admin_cat_"))
 async def admin_list_channels(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cat_id = int(cb.data.split("_")[2])
     ch = await get_all_channels(cat_id)
     if not ch:
@@ -150,7 +163,8 @@ async def admin_list_channels(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin_list_page_"))
 async def admin_list_page(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     parts = cb.data.split("_")
     page = int(parts[3])
     cat_id = parts[4]
@@ -173,11 +187,14 @@ async def admin_list_back(cb: CallbackQuery):
 # ---------- Просмотр канала (с кнопкой активности) ----------
 @router.callback_query(F.data.startswith("admin_view_"))
 async def adm_view_chan(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cid = cb.data.replace("admin_view_", "")
     ch = await get_all_channels()
     info = ch.get(cid)
-    if not info: await cb.answer("Канал не найден", True); return
+    if not info:
+        await cb.answer("Канал не найден", True)
+        return
     cat_name = ""
     if info.get('category_id'):
         cat = await get_category_by_id(info['category_id'])
@@ -203,31 +220,40 @@ async def adm_view_chan(cb: CallbackQuery):
 # ---------- Переключение активности ----------
 @router.callback_query(F.data.startswith("toggle_active_"))
 async def toggle_active_cb(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cid = cb.data.replace("toggle_active_", "")
     new_state = await toggle_channel_active(cid)
-    admin_logger.info(f"Admin {cb.from_user.id} toggled channel {cid} active={new_state}")
+    log_admin_action(cb.from_user.id, f"toggled channel {cid} active={new_state}")
     await cb.answer(f"Канал теперь {'активен' if new_state else 'скрыт'}", show_alert=False)
     await adm_view_chan(cb)
 
 # ---------- Редактирование канала ----------
 @router.callback_query(F.data.startswith("edit_channel_"))
 async def edit_chan_menu(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cid = cb.data.replace("edit_channel_", "")
     ch = await get_all_channels()
-    if cid not in ch: await cb.answer("Канал не найден", True); return
+    if cid not in ch:
+        await cb.answer("Канал не найден", True)
+        return
     await cb.message.edit_text(f"Редактирование канала {ch[cid]['name']}\nВыберите, что изменить:", reply_markup=get_edit_channel_keyboard(cid))
     await cb.answer()
 
 @router.callback_query(F.data.startswith("edit_") & ~F.data.startswith("edit_channel_"))
 async def edit_field(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     parts = cb.data.split("_",2)
-    if len(parts)<3: await cb.answer("Ошибка", True); return
+    if len(parts)<3:
+        await cb.answer("Ошибка", True)
+        return
     cid, field = parts[1], parts[2]
     ch = await get_all_channels()
-    if cid not in ch: await cb.answer("Канал не найден", True); return
+    if cid not in ch:
+        await cb.answer("Канал не найден", True)
+        return
     await state.update_data(ch_id=cid, field=field)
     if field == 'category':
         await cb.message.edit_text("Выберите новую категорию:", reply_markup=await get_category_selection_keyboard(get_all_categories, f"edit_chan_cat_{cid}"))
@@ -244,66 +270,80 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("edit_chan_cat_"))
 async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     parts = cb.data.split("_")
     cid = parts[3]
     cat_id = int(parts[4])
     await update_channel(cid, category_id=cat_id)
-    admin_logger.info(f"Admin {cb.from_user.id} updated channel {cid} category to {cat_id}")
+    log_admin_action(cb.from_user.id, f"updated channel {cid} category to {cat_id}")
     await cb.answer("Категория обновлена", False)
     await adm_view_chan(cb)
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_name)
 async def e_name(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     d = await state.get_data()
     await update_channel(d['ch_id'], name=m.text)
-    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} name")
+    log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} name")
     await m.answer(f"✅ Название изменено на {m.text}")
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_price)
 async def e_price(m: Message, state: FSMContext):
-    if not m.text.isdigit(): await m.answer("Введите число"); return
+    if not await admin_only_message(m):
+        return
+    if not m.text.isdigit():
+        await m.answer("Введите число"); return
     d = await state.get_data()
     await update_channel(d['ch_id'], price=int(m.text))
-    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} price")
+    log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} price")
     await m.answer(f"✅ Цена изменена на {m.text}$")
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_subscribers)
 async def e_subs(m: Message, state: FSMContext):
-    if not m.text.isdigit(): await m.answer("Введите число"); return
+    if not await admin_only_message(m):
+        return
+    if not m.text.isdigit():
+        await m.answer("Введите число"); return
     d = await state.get_data()
     await update_channel(d['ch_id'], subs=int(m.text))
-    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} subscribers")
+    log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} subscribers")
     await m.answer(f"✅ Количество подписчиков изменено на {m.text}")
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_url)
 async def e_url(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     url = m.text.strip()
     if not url.startswith("https://t.me/"):
         await m.answer("Ссылка должна начинаться с https://t.me/")
         return
     d = await state.get_data()
     await update_channel(d['ch_id'], url=url)
-    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} url")
+    log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} url")
     await m.answer(f"✅ Ссылка изменена на {url}")
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_description)
 async def e_desc(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     d = await state.get_data()
     await update_channel(d['ch_id'], desc=m.text)
-    admin_logger.info(f"Admin {m.from_user.id} updated channel {d['ch_id']} description")
+    log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} description")
     await m.answer("✅ Описание изменено")
     await state.clear()
 
 # ---------- Удаление канала ----------
 @router.callback_query(F.data == "admin_remove")
 async def adm_rem_menu(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     ch = await get_all_channels()
     if not ch:
         await cb.message.delete()
@@ -315,13 +355,14 @@ async def adm_rem_menu(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin_del_"))
 async def adm_del(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     cid = cb.data.replace("admin_del_", "")
     ch = await get_all_channels()
     if cid in ch:
         name = ch[cid]['name']
         await delete_channel(cid)
-        admin_logger.info(f"Admin {cb.from_user.id} deleted channel {cid} ({name})")
+        log_admin_action(cb.from_user.id, f"deleted channel {cid} ({name})")
         await cb.answer(f"✅ Канал {name} удалён", False)
         new_ch = await get_all_channels()
         if not new_ch:
@@ -335,8 +376,7 @@ async def adm_del(cb: CallbackQuery):
 # ---------- Добавление канала (стандартное) ----------
 @router.callback_query(F.data == "admin_add")
 async def adm_add_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     await cb.message.edit_text("➕ Выберите категорию для нового канала:", reply_markup=await get_category_selection_keyboard(get_all_categories, "add_chan_cat"))
     await state.set_state(AddChannelStates.waiting_for_category)
@@ -344,8 +384,7 @@ async def adm_add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("add_chan_cat_"), AddChannelStates.waiting_for_category)
 async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     cat_id = int(cb.data.split("_")[3])
     await state.update_data(category_id=cat_id)
@@ -355,12 +394,16 @@ async def add_channel_category_chosen(cb: CallbackQuery, state: FSMContext):
 
 @router.message(AddChannelStates.waiting_for_name)
 async def a_name(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     await state.update_data(name=m.text)
     await m.answer("Введите цену (число):", reply_markup=cancel_keyboard())
     await state.set_state(AddChannelStates.waiting_for_price)
 
 @router.message(AddChannelStates.waiting_for_price)
 async def a_price(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     if not m.text.isdigit():
         await m.answer("Введите число")
         return
@@ -370,6 +413,8 @@ async def a_price(m: Message, state: FSMContext):
 
 @router.message(AddChannelStates.waiting_for_subscribers)
 async def a_subs(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     if not m.text.isdigit():
         await m.answer("Введите число")
         return
@@ -379,6 +424,8 @@ async def a_subs(m: Message, state: FSMContext):
 
 @router.message(AddChannelStates.waiting_for_url)
 async def a_url(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     url = m.text.strip()
     if not url.startswith("https://t.me/"):
         await m.answer("Ссылка должна начинаться с https://t.me/")
@@ -389,12 +436,14 @@ async def a_url(m: Message, state: FSMContext):
 
 @router.message(AddChannelStates.waiting_for_description)
 async def a_desc(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     await state.update_data(description=m.text)
     data = await state.get_data()
     new_id = f"channel_{int(time.time())}"
     cat_id = data['category_id']
     await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
-    admin_logger.info(f"Admin {m.from_user.id} added channel {new_id} ({data['name']})")
+    log_admin_action(m.from_user.id, f"added channel {new_id} ({data['name']})")
     cat = await get_category_by_id(cat_id)
     cat_name = cat['display_name'] if cat else ""
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_keyboard())
@@ -403,8 +452,10 @@ async def a_desc(m: Message, state: FSMContext):
 # ========== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ ==========
 
 # ---------- Просмотр логов ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/logs")
 async def show_logs(m: Message):
+    if not await admin_only_message(m):
+        return
     try:
         if not os.path.exists('bot_errors.log'):
             await m.answer("Файл логов не найден.")
@@ -423,8 +474,10 @@ async def show_logs(m: Message):
         await m.answer(f"Ошибка при чтении логов: {e}")
 
 # ---------- Просмотр логов действий администратора ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/admin_logs")
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/admin_logs")
 async def show_admin_logs(m: Message):
+    if not await admin_only_message(m):
+        return
     try:
         if not os.path.exists('admin_actions.log'):
             await m.answer("Файл логов администратора не найден.")
@@ -445,25 +498,30 @@ async def show_admin_logs(m: Message):
 # ---------- Статистика (общая) ----------
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats_cb(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"])
-    tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
-    stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
-    chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
-    week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
-    await conn.close()
-    status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
-    week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week) if week else ""
-    txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum or 0}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n{status_lines}\n"
-    if week_lines:
-        txt += f"\n📅 Последние 7 дней:\n{week_lines}"
-    await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
-    await cb.answer()
+    try:
+        import asyncpg
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
+        stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
+        chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
+        week = await conn.fetch("SELECT DATE(created_at), COUNT(*), SUM(total) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY DATE(created_at) ASC")
+        await conn.close()
+        status_lines = "\n".join(f"{'🟡' if s=='в обработке' else '🟢' if s=='оплачена' else '✅' if s=='выполнена' else '❌'} {s}: {c}" for s, c in stat)
+        week_lines = "\n".join(f"{d}: {cnt} заявок, {s or 0}$" for d, cnt, s in week) if week else ""
+        txt = f"📊 Статистика ESVIG Service\n\n📦 Всего заявок: {tot_ord}\n💰 Общая сумма: {tot_sum or 0}$\n📋 Каналов: {chan_cnt}\n\n🔄 По статусам:\n{status_lines}\n"
+        if week_lines:
+            txt += f"\n📅 Последние 7 дней:\n{week_lines}"
+        await cb.message.edit_text(txt, reply_markup=get_stats_keyboard())
+        await cb.answer()
+    except Exception as e:
+        await cb.answer(f"Ошибка загрузки статистики: {e}", show_alert=True)
 
 @router.callback_query(F.data == "top_channels")
 async def top_channels_cb(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
     top = await get_top_channels(10)
     if not top:
         await cb.answer("Нет данных о заказах", show_alert=True)
@@ -476,6 +534,8 @@ async def top_channels_cb(cb: CallbackQuery):
 
 @router.callback_query(F.data == "top_buyers")
 async def top_buyers_cb(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
     buyers = await get_top_buyers(10)
     if not buyers:
         await cb.answer("Нет данных о покупателях", show_alert=True)
@@ -488,6 +548,8 @@ async def top_buyers_cb(cb: CallbackQuery):
 
 @router.callback_query(F.data == "daily_revenue")
 async def daily_revenue_cb(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
     revenue = await get_daily_revenue(7)
     if not revenue:
         await cb.answer("Нет данных о доходах", show_alert=True)
@@ -500,12 +562,14 @@ async def daily_revenue_cb(cb: CallbackQuery):
 
 @router.callback_query(F.data == "export_orders")
 async def export_orders_cb(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
     await export_orders(cb.message)
     await cb.answer()
 
 async def export_orders(message: Message):
     from database import get_orders
-    if message.from_user.id not in ADMIN_IDS:
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет доступа")
         return
     await message.answer("⏳ Формирую отчёт...")
@@ -529,18 +593,22 @@ async def export_orders(message: Message):
         file = FSInputFile(filename)
         await message.answer_document(file, caption="📋 Все заказы")
         os.remove(filename)
-        admin_logger.info(f"Admin {message.from_user.id} exported orders")
+        log_admin_action(message.from_user.id, "exported orders")
     except Exception as e:
         await message.answer(f"❌ Ошибка экспорта: {e}")
         logging.error(f"Export error: {e}")
 
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/export")
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/export")
 async def export_cmd(m: Message):
+    if not await admin_only_message(m):
+        return
     await export_orders(m)
 
 # ---------- /update_subs ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/update_subs")
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/update_subs")
 async def update_subs_cmd(m: Message):
+    if not await admin_only_message(m):
+        return
     await m.answer("⏳ Обновляю подписчиков для всех каналов...")
     channels = await get_all_channels()
     if not channels:
@@ -573,8 +641,7 @@ async def update_subs_cmd(m: Message):
 # ---------- Быстрое добавление канала ----------
 @router.callback_query(F.data == "quick_add")
 async def quick_add_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb, show_alert=False):
         return
     await cb.message.edit_text(
         "⚡ Отправьте ссылку на канал (например, https://t.me/username):",
@@ -585,6 +652,8 @@ async def quick_add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(QuickAddStates.waiting_for_channel_link)
 async def quick_add_link_received(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     url = m.text.strip()
     match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
     if not match:
@@ -608,6 +677,8 @@ async def quick_add_link_received(m: Message, state: FSMContext):
 
 @router.message(QuickAddStates.waiting_for_price)
 async def quick_add_price_received(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     if not m.text.isdigit():
         await m.answer("Введите цену целым числом.")
         return
@@ -617,15 +688,14 @@ async def quick_add_price_received(m: Message, state: FSMContext):
     cat_id = cats[0]['id'] if cats else None
     new_id = f"channel_{int(time.time())}"
     await add_channel(new_id, data['quick_name'], price, data['quick_subs'], data['quick_url'], "", cat_id)
-    admin_logger.info(f"Admin {m.from_user.id} quick-added channel {new_id}")
+    log_admin_action(m.from_user.id, f"quick-added channel {new_id}")
     await m.answer(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_keyboard())
     await state.clear()
 
 # ---------- Массовое добавление каналов ----------
 @router.callback_query(F.data == "bulk_add")
 async def bulk_add_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb, show_alert=False):
         return
     await cb.message.edit_text(
         "📥 Отправьте JSON-массив с данными каналов.\n"
@@ -638,6 +708,8 @@ async def bulk_add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(MassAddStates.waiting_for_bulk_json)
 async def bulk_add_json_received(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     try:
         data = json.loads(m.text.strip())
         if not isinstance(data, list):
@@ -655,7 +727,7 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
                 new_id = f"channel_{int(time.time())}_{idx}"
                 await add_channel(new_id, name, price, subs, url, desc, cat_id)
                 added += 1
-                admin_logger.info(f"Admin {m.from_user.id} bulk-added channel {new_id}")
+                log_admin_action(m.from_user.id, f"bulk-added channel {new_id}")
             except Exception as e:
                 errors.append(f"{item.get('name', 'неизвестно')}: {e}")
         result = f"✅ Добавлено каналов: {added}"
@@ -683,7 +755,8 @@ async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
 # ---------- Заявки ----------
 @router.callback_query(F.data == "admin_orders")
 async def adm_orders(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb):
+        return
     ords = await get_orders(20)
     if not ords:
         await cb.message.edit_text("Нет заявок", reply_markup=get_admin_keyboard())
@@ -694,10 +767,12 @@ async def adm_orders(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin_order_"))
 async def adm_view_order(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb):
+        return
     oid = int(cb.data.split("_")[2])
     ordd = await get_order_by_id(oid)
-    if not ordd: await cb.answer("Заявка не найдена", True); return
+    if not ordd:
+        await cb.answer("Заявка не найдена", True); return
     em = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒', 'вывод':'💰'}
     txt = f"📄 Заявка #{ordd['id']}\n👤 @{ordd['username']}\n💰 Сумма: {ordd['total']}$\n📌 Статус: {em.get(ordd['status'],'⚪')} {ordd['status']}\n\nВыберите новый статус:"
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -712,12 +787,14 @@ async def adm_view_order(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("set_status_"))
 async def set_st(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    if not await admin_only_callback(cb):
+        return
     parts = cb.data.split("_")
     oid = int(parts[2])
     new_st = "_".join(parts[3:])
     order = await get_order_by_id(oid)
-    if not order: await cb.answer("Заявка не найдена", True); return
+    if not order:
+        await cb.answer("Заявка не найдена", True); return
 
     old_status = order['status']
     if new_st == 'отменена' and old_status == 'оплачена':
@@ -725,7 +802,7 @@ async def set_st(cb: CallbackQuery):
         try:
             await cb.bot.send_message(order['user_id'], f"📢 Ваша заявка #{oid} была отменена администратором. Средства возвращены на баланс.")
         except: pass
-        for aid in ADMIN_IDS:
+        for aid in [ADMIN_IDS]:
             if aid != cb.from_user.id:
                 try:
                     await cb.bot.send_message(aid, f"❌ Админ отменил заявку #{oid} (возврат {order['total']}$)")
@@ -742,8 +819,7 @@ async def set_st(cb: CallbackQuery):
 # ---------- Ручное изменение баланса ----------
 @router.callback_query(F.data == "admin_balance")
 async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     await cb.message.edit_text("Введите Telegram ID пользователя:", reply_markup=cancel_keyboard())
     await state.set_state(AdminBalanceStates.waiting_for_user_id)
@@ -751,6 +827,8 @@ async def admin_balance_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(AdminBalanceStates.waiting_for_user_id)
 async def process_balance_user_id(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     if not m.text.isdigit():
         await m.answer("Введите числовой ID")
         return
@@ -761,6 +839,8 @@ async def process_balance_user_id(m: Message, state: FSMContext):
 
 @router.message(AdminBalanceStates.waiting_for_amount)
 async def process_balance_amount(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     try:
         amount = int(m.text.strip())
     except ValueError:
@@ -771,12 +851,12 @@ async def process_balance_amount(m: Message, state: FSMContext):
     await get_or_create_user(target_id)
     if amount >= 0:
         await update_user_balance(target_id, amount, f"Ручное пополнение админом {m.from_user.id}")
-        admin_logger.info(f"Admin {m.from_user.id} added {amount}$ to user {target_id}")
+        log_admin_action(m.from_user.id, f"added {amount}$ to user {target_id}")
         await m.answer(f"✅ Баланс пользователя {target_id} пополнен на {amount}$", reply_markup=get_admin_keyboard())
     else:
         success = await debit_balance(target_id, -amount, None, f"Ручное списание админом {m.from_user.id}")
         if success:
-            admin_logger.info(f"Admin {m.from_user.id} deducted {-amount}$ from user {target_id}")
+            log_admin_action(m.from_user.id, f"deducted {-amount}$ from user {target_id}")
             await m.answer(f"✅ С баланса пользователя {target_id} списано {-amount}$", reply_markup=get_admin_keyboard())
         else:
             bal = await get_user_balance(target_id)
@@ -786,8 +866,7 @@ async def process_balance_amount(m: Message, state: FSMContext):
 # ---------- Очистка заявок ----------
 @router.callback_query(F.data == "confirm_clear_failed")
 async def ask_clear_failed(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Да, очистить неуспешные", callback_data="clear_failed_yes")],
@@ -798,8 +877,7 @@ async def ask_clear_failed(cb: CallbackQuery):
 
 @router.callback_query(F.data == "confirm_clear_all")
 async def ask_clear_all(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Да, полная очистка", callback_data="clear_all_yes")],
@@ -810,8 +888,7 @@ async def ask_clear_all(cb: CallbackQuery):
 
 @router.callback_query(F.data == "clear_failed_yes")
 async def clear_failed(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     try:
         await clear_non_successful_orders()
@@ -823,8 +900,7 @@ async def clear_failed(cb: CallbackQuery):
 
 @router.callback_query(F.data == "clear_all_yes")
 async def clear_all(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     try:
         await clear_all_orders()
@@ -836,15 +912,16 @@ async def clear_all(cb: CallbackQuery):
 
 @router.callback_query(F.data == "clear_no")
 async def clear_no(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Нет прав", show_alert=True)
+    if not await admin_only_callback(cb):
         return
     await cb.message.delete()
     await cb.answer("Очистка отменена")
 
 # ---------- Поиск каналов ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text.startswith("/find_channels"))
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text.startswith("/find_channels"))
 async def find_channels(m: Message):
+    if not await admin_only_message(m):
+        return
     query = m.text.replace("/find_channels", "").strip()
     if not query:
         await m.answer("Использование: /find_channels <текст>")
@@ -858,8 +935,10 @@ async def find_channels(m: Message):
     await m.answer(f"Результаты поиска «{query}» (страница 1/{total}):", reply_markup=kb)
 
 # ---------- Резервное копирование ----------
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/backup")
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/backup")
 async def backup_cmd(m: Message):
+    if not await admin_only_message(m):
+        return
     await m.answer("⏳ Создаю резервную копию базы данных...")
     try:
         filename = await backup_database()
@@ -871,22 +950,27 @@ async def backup_cmd(m: Message):
         await m.answer(f"❌ Ошибка при создании бэкапа: {e}")
 
 # ========== МАССОВАЯ РАССЫЛКА С ПОДТВЕРЖДЕНИЕМ ==========
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/broadcast")
+@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/broadcast")
 @router.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(cb_or_msg, state: FSMContext):
     if isinstance(cb_or_msg, CallbackQuery):
         cb = cb_or_msg
+        if not await admin_only_callback(cb, show_alert=False):
+            return
         await cb.message.answer("Введите сообщение для рассылки:", reply_markup=cancel_keyboard())
         await cb.answer()
     else:
+        if not await admin_only_message(cb_or_msg):
+            return
         await cb_or_msg.answer("Введите сообщение для рассылки:", reply_markup=cancel_keyboard())
     await state.set_state(AdminSupportStates.waiting_for_broadcast_message)
 
 @router.message(AdminSupportStates.waiting_for_broadcast_message)
 async def broadcast_text_received(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
     text = m.text
     await state.update_data(broadcast_text=text)
-    # Показываем предпросмотр и запрашиваем подтверждение
     preview = f"Рассылка:\n\n{text}\n\nПодтвердить отправку?"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data="broadcast_confirm"),
@@ -897,6 +981,8 @@ async def broadcast_text_received(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "broadcast_confirm", AdminSupportStates.waiting_for_broadcast_confirm)
 async def confirm_broadcast(cb: CallbackQuery, state: FSMContext):
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     data = await state.get_data()
     text = data.get('broadcast_text', '')
     await state.clear()
@@ -914,6 +1000,8 @@ async def confirm_broadcast(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "broadcast_cancel", AdminSupportStates.waiting_for_broadcast_confirm)
 async def cancel_broadcast_inline(cb: CallbackQuery, state: FSMContext):
+    if not await admin_only_callback(cb, show_alert=False):
+        return
     await state.clear()
     await cb.message.edit_text("Рассылка отменена.", reply_markup=get_admin_keyboard())
     await cb.answer()
