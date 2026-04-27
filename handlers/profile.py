@@ -6,10 +6,11 @@ import requests
 from database import (get_or_create_user, get_user_daily_info, get_orders_by_user,
                       get_user_balance, update_user_balance, debit_balance,
                       get_order_by_id, update_order_status, return_balance,
-                      get_user_transactions, process_pending_orders)
+                      get_user_transactions, process_pending_orders,
+                      get_referral_stats)
 from states import OrderForm
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
-                   CHECK_PAYMENT_MESSAGE)
+                   CHECK_PAYMENT_MESSAGE, REFERRAL_INFO)
 from keyboards import (get_profile_keyboard, get_main_keyboard, cancel_keyboard)
 from config import MIN_DEPOSIT, PAID_BTN_URL, CRYPTO_BOT_TOKEN, XROCKET_API_KEY, ADMIN_IDS
 
@@ -36,6 +37,9 @@ async def profile(m: Message):
         except Exception:
             pass
 
+        # Реферальная статистика
+        ref_stats = await get_referral_stats(m.from_user.id)
+
         txt = PROFILE_TEMPLATE.format(
             user_id=m.from_user.id,
             username=m.from_user.username or 'не указан',
@@ -43,7 +47,9 @@ async def profile(m: Message):
             total_spent=total_spent,
             balance=user.get('balance', 0),
             left_orders=left_orders,
-            daily_limit=daily_limit if daily_limit > 0 else '∞'
+            daily_limit=daily_limit if daily_limit > 0 else '∞',
+            invited=ref_stats['invited'],
+            bonuses=ref_stats['bonuses']
         )
         await m.answer(txt, reply_markup=get_profile_keyboard())
     except Exception as e:
@@ -58,7 +64,7 @@ async def transaction_history(cb: CallbackQuery):
         return
     text = "📜 Последние операции:\n\n"
     for t in transactions:
-        emoji = "🟢" if t['type'] == 'пополнение' else "🔴"
+        emoji = "🟢" if t['type'] in ('пополнение', 'реферальный бонус') else "🔴"
         text += f"{emoji} {t['amount']}$ — {t['description']}\n   {t['created_at']}\n\n"
     await cb.message.edit_text(text, reply_markup=get_profile_keyboard())
     await cb.answer()
@@ -187,7 +193,6 @@ async def process_deposit_amount(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "check_payment")
 async def check_payment_handler(cb: CallbackQuery):
-    # Пытаемся оплатить ожидающие заказы
     await process_pending_orders(cb.from_user.id)
     orders = await get_orders_by_user(cb.from_user.id, limit=5)
     pending = [o for o in orders if o['status'] == 'ожидает оплаты']
@@ -267,7 +272,6 @@ async def confirm_cancel(cb: CallbackQuery):
         await cb.answer("Статус изменился, отмена невозможна", True)
         return
     await update_order_status(order_id, 'отменена')
-    # Если статус был 'оплачена', возвращаем деньги
     if ordd['status'] == 'оплачена':
         await return_balance(ordd['user_id'], ordd['total'], order_id, f"Возврат за отмену заказа #{order_id}")
     await cb.answer("Заявка отменена, деньги возвращены на баланс", False)
