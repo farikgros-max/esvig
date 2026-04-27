@@ -1,19 +1,15 @@
-import os
-import asyncio
-import time
-import asyncpg
-import json
-import logging
-import re
+import os, asyncio, time, asyncpg, json, logging, re
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
 from database import (get_all_channels, add_channel, delete_channel, update_channel,
+                      toggle_channel_active,
                       get_orders, get_order_by_id, update_order_status, return_balance,
                       clear_non_successful_orders, clear_all_orders,
                       get_all_categories, add_category, delete_category, get_category_by_id,
-                      get_or_create_user, update_user_balance, debit_balance, get_user_balance)
+                      get_or_create_user, update_user_balance, debit_balance, get_user_balance,
+                      get_top_channels)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
@@ -113,11 +109,12 @@ async def adm_list(cb: CallbackQuery):
     await cb.message.edit_text("📋 Список каналов\nНажмите на канал для подробностей:", reply_markup=get_admin_list_keyboard(ch))
     await cb.answer()
 
+# ---------- Просмотр канала (добавлена кнопка переключения активности) ----------
 @router.callback_query(F.data.startswith("admin_view_"))
 async def adm_view_chan(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
-    ch = await get_all_channels()
     cid = cb.data.replace("admin_view_", "")
+    ch = await get_all_channels()
     info = ch.get(cid)
     if not info: await cb.answer("Канал не найден", True); return
     cat_name = ""
@@ -125,12 +122,32 @@ async def adm_view_chan(cb: CallbackQuery):
         cat = await get_category_by_id(info['category_id'])
         if cat:
             cat_name = cat['display_name']
+    active = info.get('active', True)
+    status_btn = InlineKeyboardButton(
+        text="🟢 Активен" if active else "🔴 Скрыт",
+        callback_data=f"toggle_active_{cid}"
+    )
     txt = f"📌 {info['name']}\n🔗 {info['url']}\n💰 {info['price']}$\n👥 {info['subscribers']} подп.\n📝 {info.get('description','Нет описания')}"
     if cat_name:
         txt += f"\n🏷 {cat_name}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]])
+    txt += f"\n\nСтатус: {'🟢 активен' if active else '🔴 скрыт'}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_channel_{cid}")],
+        [status_btn],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_list")]
+    ])
     await cb.message.edit_text(txt, reply_markup=kb)
     await cb.answer()
+
+# ---------- Переключение активности ----------
+@router.callback_query(F.data.startswith("toggle_active_"))
+async def toggle_active_cb(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS: await cb.answer("Нет прав", True); return
+    cid = cb.data.replace("toggle_active_", "")
+    new_state = await toggle_channel_active(cid)
+    await cb.answer(f"Канал теперь {'активен' if new_state else 'скрыт'}", show_alert=False)
+    # Обновляем то же сообщение
+    await adm_view_chan(cb)
 
 # ---------- Редактирование канала ----------
 @router.callback_query(F.data.startswith("edit_channel_"))
@@ -336,7 +353,51 @@ async def show_logs(m: Message):
     except Exception as e:
         await m.answer(f"Ошибка при чтении логов: {e}")
 
-# ---------- Быстрое добавление канала (исправлено) ----------
+# ---------- /stats ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/stats")
+async def stats_cmd(m: Message):
+    top = await get_top_channels(10)
+    if not top:
+        await m.answer("Нет данных о заказах.")
+        return
+    text = "📊 Топ каналов по заказам:\n\n"
+    for i, item in enumerate(top, 1):
+        text += f"{i}. {item['name']} — {item['orders']} зак. на {item['total']}$\n"
+    await m.answer(text)
+
+# ---------- /update_subs ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/update_subs")
+async def update_subs_cmd(m: Message):
+    await m.answer("⏳ Обновляю подписчиков для всех каналов...")
+    channels = await get_all_channels()
+    if not channels:
+        await m.answer("Нет каналов для обновления.")
+        return
+    updated = 0
+    failed = 0
+    for cid, info in channels.items():
+        url = info.get('url', '')
+        match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
+        if not match:
+            failed += 1
+            continue
+        username = match.group(1)
+        try:
+            chat = await m.bot.get_chat(f"@{username}" if not username.startswith("@") else username)
+            new_name = chat.title or chat.full_name or info['name']
+            try:
+                new_subs = await m.bot.get_chat_member_count(chat.id)
+            except Exception:
+                new_subs = info['subscribers']
+            await update_channel(cid, name=new_name, subs=new_subs)
+            updated += 1
+        except Exception as e:
+            print(f"Failed to update {url}: {e}")
+            failed += 1
+        await asyncio.sleep(0.5)
+    await m.answer(f"✅ Обновлено: {updated} каналов\n❌ Не удалось: {failed}")
+
+# ---------- Быстрое добавление канала ----------
 @router.callback_query(F.data == "quick_add")
 async def quick_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id not in ADMIN_IDS:
@@ -352,17 +413,14 @@ async def quick_add_start(cb: CallbackQuery, state: FSMContext):
 @router.message(QuickAddStates.waiting_for_channel_link)
 async def quick_add_link_received(m: Message, state: FSMContext):
     url = m.text.strip()
-    # Извлекаем username/ID из ссылки
     match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
     if not match:
         await m.answer("Не удалось распознать ссылку. Убедитесь, что формат верный: https://t.me/username")
         return
     username = match.group(1)
-    # Пытаемся получить информацию о чате
     try:
         chat = await m.bot.get_chat(f"@{username}" if not username.startswith("@") else username)
         name = chat.title or chat.full_name or "Без названия"
-        # Количество подписчиков
         try:
             count = await m.bot.get_chat_member_count(chat.id)
         except Exception:
@@ -500,7 +558,7 @@ async def set_st(cb: CallbackQuery):
     ords = await get_orders(20)
     await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
-# ---------- Статистика ----------
+# ---------- Статистика (общая) ----------
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats_cb(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS:
@@ -620,36 +678,3 @@ async def clear_no(cb: CallbackQuery):
         return
     await cb.message.delete()
     await cb.answer("Очистка отменена")
-
-# ========== НОВАЯ КОМАНДА: /update_subs ==========
-@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/update_subs")
-async def update_subs_cmd(m: Message):
-    await m.answer("⏳ Обновляю подписчиков для всех каналов...")
-    channels = await get_all_channels()
-    if not channels:
-        await m.answer("Нет каналов для обновления.")
-        return
-    updated = 0
-    failed = 0
-    for cid, info in channels.items():
-        # Извлекаем username из URL (если есть)
-        url = info.get('url', '')
-        match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
-        if not match:
-            failed += 1
-            continue
-        username = match.group(1)
-        try:
-            chat = await m.bot.get_chat(f"@{username}" if not username.startswith("@") else username)
-            new_name = chat.title or chat.full_name or info['name']
-            try:
-                new_subs = await m.bot.get_chat_member_count(chat.id)
-            except Exception:
-                new_subs = info['subscribers']  # оставляем старые, если не удалось получить
-            await update_channel(cid, name=new_name, subs=new_subs)
-            updated += 1
-        except Exception as e:
-            print(f"Failed to update {url}: {e}")
-            failed += 1
-        await asyncio.sleep(0.5)  # чтобы не упереться в лимиты Telegram API
-    await m.answer(f"✅ Обновлено: {updated} каналов\n❌ Не удалось: {failed}")
