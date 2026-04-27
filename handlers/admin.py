@@ -11,7 +11,6 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       get_or_create_user, update_user_balance, debit_balance, get_user_balance,
                       get_top_channels, get_top_buyers, get_daily_revenue, backup_database,
-                      get_tickets, get_ticket_messages, add_ticket_message, close_ticket,
                       get_all_user_ids)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
@@ -30,7 +29,6 @@ fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 admin_logger.addHandler(fh)
 
 class AdminSupportStates(StatesGroup):
-    waiting_for_ticket_reply = State()
     waiting_for_broadcast_message = State()
 
 # ---------- Вход в админ‑панель ----------
