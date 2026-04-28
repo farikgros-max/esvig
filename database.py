@@ -127,7 +127,7 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-    # Таблица для биржи
+    # Таблица для биржи – создаём, если ещё нет
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS seller_channels (
             id SERIAL PRIMARY KEY,
@@ -141,7 +141,14 @@ async def init_db():
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-    # Миграции
+    # Миграции: добавляем колонки, если вдруг таблица уже существовала без них
+    for col in ['user_id', 'username', 'channel_url', 'channel_name', 'price', 'description', 'status', 'created_at', 'updated_at']:
+        try:
+            await conn.execute(f'ALTER TABLE seller_channels ADD COLUMN IF NOT EXISTS {col} TEXT')
+        except Exception:
+            pass
+
+    # Остальные миграции
     try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
     except Exception:
