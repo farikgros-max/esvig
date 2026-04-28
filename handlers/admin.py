@@ -19,7 +19,7 @@ from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_re
                        get_categories_admin_keyboard, get_category_actions_keyboard,
                        get_category_selection_keyboard, cancel_keyboard, get_main_keyboard,
                        get_admin_categories_keyboard, get_confirm_delete_category_keyboard)
-from config import ORDER_CHANNEL_ID
+from config import ADMIN_IDS, ORDER_CHANNEL_ID
 from utils import is_admin, admin_only_message, admin_only_callback, log_admin_action
 
 router = Router()
@@ -452,7 +452,7 @@ async def a_desc(m: Message, state: FSMContext):
 # ========== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ ==========
 
 # ---------- Просмотр логов ----------
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/logs")
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
 async def show_logs(m: Message):
     if not await admin_only_message(m):
         return
@@ -474,7 +474,7 @@ async def show_logs(m: Message):
         await m.answer(f"Ошибка при чтении логов: {e}")
 
 # ---------- Просмотр логов действий администратора ----------
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/admin_logs")
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/admin_logs")
 async def show_admin_logs(m: Message):
     if not await admin_only_message(m):
         return
@@ -598,14 +598,14 @@ async def export_orders(message: Message):
         await message.answer(f"❌ Ошибка экспорта: {e}")
         logging.error(f"Export error: {e}")
 
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/export")
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/export")
 async def export_cmd(m: Message):
     if not await admin_only_message(m):
         return
     await export_orders(m)
 
 # ---------- /update_subs ----------
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/update_subs")
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/update_subs")
 async def update_subs_cmd(m: Message):
     if not await admin_only_message(m):
         return
@@ -802,7 +802,7 @@ async def set_st(cb: CallbackQuery):
         try:
             await cb.bot.send_message(order['user_id'], f"📢 Ваша заявка #{oid} была отменена администратором. Средства возвращены на баланс.")
         except: pass
-        for aid in [ADMIN_IDS]:
+        for aid in ADMIN_IDS:
             if aid != cb.from_user.id:
                 try:
                     await cb.bot.send_message(aid, f"❌ Админ отменил заявку #{oid} (возврат {order['total']}$)")
@@ -918,7 +918,7 @@ async def clear_no(cb: CallbackQuery):
     await cb.answer("Очистка отменена")
 
 # ---------- Поиск каналов ----------
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text.startswith("/find_channels"))
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text.startswith("/find_channels"))
 async def find_channels(m: Message):
     if not await admin_only_message(m):
         return
@@ -935,7 +935,7 @@ async def find_channels(m: Message):
     await m.answer(f"Результаты поиска «{query}» (страница 1/{total}):", reply_markup=kb)
 
 # ---------- Резервное копирование ----------
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/backup")
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/backup")
 async def backup_cmd(m: Message):
     if not await admin_only_message(m):
         return
@@ -950,7 +950,7 @@ async def backup_cmd(m: Message):
         await m.answer(f"❌ Ошибка при создании бэкапа: {e}")
 
 # ========== МАССОВАЯ РАССЫЛКА С ПОДТВЕРЖДЕНИЕМ ==========
-@router.message(F.from_user.id.in_([ADMIN_IDS]), F.text == "/broadcast")
+@router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/broadcast")
 @router.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(cb_or_msg, state: FSMContext):
     if isinstance(cb_or_msg, CallbackQuery):
