@@ -2,6 +2,8 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import logging
+import traceback
 
 from database import create_seller_application, get_seller_channels
 
@@ -13,37 +15,38 @@ class SellerStates(StatesGroup):
     waiting_for_description = State()
 
 async def submit_application(m: Message, state: FSMContext, description: str):
-    """Общая логика создания заявки с обработкой ошибок."""
+    """Общая логика создания заявки с детализированной обработкой ошибок."""
+    data = await state.get_data()
+    channel_url = data['channel_url']
+    price = data['price']
+    username = m.from_user.username or "нет username"
+
+    # Этап 1: пытаемся получить название канала
+    channel_name = channel_url  # значение по умолчанию
     try:
-        data = await state.get_data()
-        channel_url = data['channel_url']
-        price = data['price']
-        username = m.from_user.username or "нет username"
-
-        # Пытаемся получить название канала
-        channel_name = channel_url
-        try:
-            chat_id = "@" + channel_url.split('/')[-1]
-            chat = await m.bot.get_chat(chat_id)
-            channel_name = chat.title
-        except Exception:
-            await m.answer("⚠️ Не удалось получить название канала. Заявка будет сохранена с URL в качестве имени.")
-
-        # Отправляем заявку
-        await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, description)
-        await m.answer(
-            f"✅ Заявка на канал «{channel_name}» отправлена.\nМы рассмотрим её в ближайшее время.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
-            ])
-        )
-        await state.clear()
+        chat_id = "@" + channel_url.split('/')[-1]
+        chat = await m.bot.get_chat(chat_id)
+        channel_name = chat.title
     except Exception as e:
-        # Логируем ошибку и сообщаем пользователю
-        import logging
-        logging.error(f"Ошибка при создании заявки продавца: {e}", exc_info=True)
-        await m.answer("❌ Не удалось отправить заявку. Попробуйте позже или обратитесь в поддержку.")
+        await m.answer(f"⚠️ Не удалось получить название канала ({str(e)[:100]}). Заявка будет сохранена с URL в качестве имени.")
+
+    # Этап 2: отправляем заявку в БД
+    try:
+        await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, description)
+    except Exception as e:
+        logging.error(f"Ошибка при создании заявки продавца: {e}\n{traceback.format_exc()}")
+        await m.answer(f"❌ Ошибка при сохранении заявки: {str(e)[:200]}")
         await state.clear()
+        return
+
+    # Успех
+    await m.answer(
+        f"✅ Заявка на канал «{channel_name}» отправлена.\nМы рассмотрим её в ближайшее время.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
+        ])
+    )
+    await state.clear()
 
 # ---------- Вход в раздел продавца ----------
 @router.message(F.text == "📢 Стать продавцом")
