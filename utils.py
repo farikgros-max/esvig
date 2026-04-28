@@ -1,4 +1,5 @@
 import logging
+import os
 from aiogram.types import Message, CallbackQuery
 from config import ADMIN_IDS
 
@@ -27,3 +28,17 @@ def safe_get(data: dict, key: str, default=None):
 def log_admin_action(user_id: int, action: str):
     """Логирует действие администратора."""
     logging.getLogger('admin_actions').info(f"Admin {user_id}: {action}")
+
+def trim_admin_log():
+    """Оставляет последние 200 строк в лог-файле администратора."""
+    log_file = 'admin_actions.log'
+    if not os.path.exists(log_file):
+        return
+    try:
+        with open(log_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        if len(lines) > 200:
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.writelines(lines[-200:])
+    except Exception as e:
+        print(f"Ошибка при обрезке логов: {e}")
