@@ -40,3 +40,10 @@ class QuickAddStates(StatesGroup):
 class WithdrawStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_method = State()
+
+class SellerStates(StatesGroup):
+    waiting_for_channel_url = State()
+    waiting_for_channel_name = State()
+    waiting_for_description = State()
+    waiting_for_price = State()
+    waiting_for_calendar_dates = State()  # даты через запятую
