@@ -70,22 +70,37 @@ async def fix_seller_channels():
     conn = await get_connection()
     try:
         columns = await conn.fetch(
-            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'seller_channels'"
+            "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'seller_channels'"
         )
     except Exception:
         return
-    col_types = {r['column_name']: r['data_type'] for r in columns}
+    col_info = {r['column_name']: (r['data_type'], r['is_nullable']) for r in columns}
     desired = {
-        'user_id': 'bigint', 'username': 'text', 'channel_url': 'text',
-        'channel_name': 'text', 'price': 'integer', 'description': 'text',
-        'status': 'text', 'created_at': 'timestamp with time zone',
-        'updated_at': 'timestamp with time zone'
+        'user_id': ('bigint', 'NO'),
+        'username': ('text', 'YES'),
+        'channel_url': ('text', 'NO'),
+        'channel_name': ('text', 'YES'),
+        'price': ('integer', 'YES'),
+        'description': ('text', 'YES'),
+        'status': ('text', 'YES'),
+        'created_at': ('timestamp with time zone', 'YES'),
+        'updated_at': ('timestamp with time zone', 'YES')
     }
-    for col, desired_type in desired.items():
-        if col not in col_types:
+    # Убедимся, что seller_id отсутствует или не вызывает проблем
+    if 'seller_id' in col_info:
+        await conn.execute('ALTER TABLE seller_channels ALTER COLUMN seller_id DROP NOT NULL')
+
+    for col, (desired_type, nullable) in desired.items():
+        if col not in col_info:
             await conn.execute(f'ALTER TABLE seller_channels ADD COLUMN {col} {desired_type}')
-        elif col_types[col] != desired_type:
-            await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} TYPE {desired_type} USING {col}::{desired_type}')
+        else:
+            current_type, current_nullable = col_info[col]
+            if current_type != desired_type:
+                await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} TYPE {desired_type} USING {col}::{desired_type}')
+            if nullable == 'NO' and current_nullable == 'YES':
+                await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} SET NOT NULL')
+            elif nullable == 'YES' and current_nullable == 'NO':
+                await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} DROP NOT NULL')
 
 async def init_db():
     conn = await get_connection()
