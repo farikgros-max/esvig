@@ -11,7 +11,9 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_all_categories, add_category, delete_category, get_category_by_id,
                       get_or_create_user, update_user_balance, debit_balance, get_user_balance,
                       get_top_channels, get_top_buyers, get_daily_revenue, backup_database,
-                      get_all_user_ids)
+                      get_all_user_ids,
+                      create_seller_application, get_seller_applications,
+                      approve_seller_application, reject_seller_application)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
@@ -1008,3 +1010,82 @@ async def cancel_broadcast_inline(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("Рассылка отменена.", reply_markup=get_admin_keyboard())
     await cb.answer()
+
+# ========== ЗАЯВКИ ПРОДАВЦОВ ==========
+@router.callback_query(F.data == "admin_seller_applications")
+async def admin_seller_applications(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
+    applications = await get_seller_applications('pending')
+    if not applications:
+        await cb.message.edit_text("Нет новых заявок от продавцов.", reply_markup=get_admin_keyboard())
+        await cb.answer()
+        return
+    text = "📋 Заявки от продавцов:\n\n"
+    for app in applications[:10]:
+        text += f"#{app['id']} | @{app['username']} | {app['channel_name']} | {app['price']}$\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📄 Заявка #{app['id']}", callback_data=f"review_seller_{app['id']}")] for app in applications[:10]
+    ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
+    await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("review_seller_"))
+async def review_seller(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
+    app_id = int(cb.data.split("_")[2])
+    applications = await get_seller_applications('pending')
+    app = next((a for a in applications if a['id'] == app_id), None)
+    if not app:
+        await cb.answer("Заявка не найдена", show_alert=True)
+        return
+    text = (
+        f"📄 Заявка #{app['id']}\n"
+        f"👤 @{app['username']}\n"
+        f"📢 Канал: {app['channel_name']}\n"
+        f"🔗 Ссылка: {app['channel_url']}\n"
+        f"💰 Цена: {app['price']}$\n"
+        f"📝 Описание: {app['description']}\n"
+        f"Статус: {app['status']}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_seller_{app_id}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_seller_{app_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_seller_applications")]
+    ])
+    await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("approve_seller_"))
+async def approve_seller(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
+    app_id = int(cb.data.split("_")[2])
+    success = await approve_seller_application(app_id)
+    if success:
+        await cb.answer("Заявка одобрена!", show_alert=False)
+        log_admin_action(cb.from_user.id, f"approved seller application {app_id}")
+        # Уведомляем владельца
+        try:
+            applications = await get_seller_applications('approved')  # после одобрения статус меняется, но для уведомления возьмём approved
+            app = next((a for a in applications if a['id'] == app_id), None)
+            if app:
+                await cb.bot.send_message(app['user_id'], f"✅ Ваша заявка на канал «{app['channel_name']}» одобрена! Теперь он появится в бирже.")
+        except: pass
+    else:
+        await cb.answer("Не удалось одобрить заявку", show_alert=True)
+    await admin_seller_applications(cb)
+
+@router.callback_query(F.data.startswith("reject_seller_"))
+async def reject_seller(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
+    app_id = int(cb.data.split("_")[2])
+    success = await reject_seller_application(app_id)
+    if success:
+        await cb.answer("Заявка отклонена", show_alert=False)
+        log_admin_action(cb.from_user.id, f"rejected seller application {app_id}")
+    else:
+        await cb.answer("Не удалось отклонить заявку", show_alert=True)
+    await admin_seller_applications(cb)
