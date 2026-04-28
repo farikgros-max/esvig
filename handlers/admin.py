@@ -797,6 +797,7 @@ async def set_st(cb: CallbackQuery):
         await cb.answer("Заявка не найдена", True); return
 
     old_status = order['status']
+    # Возврат средств при отмене оплаченной заявки
     if new_st == 'отменена' and old_status == 'оплачена':
         await return_balance(order['user_id'], order['total'], oid, f"Возврат за отмену заказа #{oid} админом")
         try:
@@ -810,9 +811,11 @@ async def set_st(cb: CallbackQuery):
 
     await update_order_status(oid, new_st)
     await cb.answer(f"✅ Статус заявки #{oid} изменён на {new_st}", False)
-    try:
-        await cb.bot.send_message(order['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
-    except: pass
+    # Уведомление пользователю при любом изменении статуса (кроме отмены – уже уведомили выше)
+    if new_st != 'отменена':
+        try:
+            await cb.bot.send_message(order['user_id'], f"📢 Статус вашей заявки #{oid} изменён на: {new_st}")
+        except: pass
     ords = await get_orders(20)
     await cb.message.edit_text("📋 Список заявок:", reply_markup=get_admin_orders_keyboard(ords))
 
