@@ -8,7 +8,8 @@ def get_main_keyboard(user_id: int = None):
     buttons = [
         [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")],
+        [KeyboardButton(text="🏪 Биржа каналов"), KeyboardButton(text="📢 Стать продавцом")]
     ]
     if user_id in ADMIN_IDS:
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
@@ -25,7 +26,8 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
          InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")]
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📋 Заявки продавцов", callback_data="admin_seller_applications")]
     ])
 
 async def get_categories_keyboard(get_all_categories):
@@ -104,6 +106,7 @@ def get_cart_keyboard(cart):
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
 
+# ---------- Админ-список каналов с выбором категории ----------
 async def get_admin_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
     if not cats:
@@ -238,3 +241,27 @@ async def get_category_selection_keyboard(get_all_categories, callback_prefix):
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ---------- Клавиатуры для продавцов ----------
+def get_seller_main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Подать заявку", callback_data="seller_apply")],
+        [InlineKeyboardButton(text="📋 Мои каналы", callback_data="seller_channels")],
+        [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
+    ])
+
+def get_seller_channel_keyboard(channel_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"seller_edit_{channel_id}")],
+        [InlineKeyboardButton(text="📅 Мой календарь", callback_data=f"seller_calendar_{channel_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="seller_channels")]
+    ])
+
+def get_seller_calendar_keyboard(channel_id: int, current_month: int, current_year: int):
+    # Стрелки для переключения месяцев будут в обработчике, здесь только статика
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️", callback_data=f"seller_cal_prev_{channel_id}_{current_month}_{current_year}"),
+         InlineKeyboardButton(text=f"{current_month}/{current_year}", callback_data="ignore"),
+         InlineKeyboardButton(text="▶️", callback_data=f"seller_cal_next_{channel_id}_{current_month}_{current_year}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"seller_channel_{channel_id}")]
+    ])
