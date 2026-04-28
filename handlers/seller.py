@@ -13,30 +13,37 @@ class SellerStates(StatesGroup):
     waiting_for_description = State()
 
 async def submit_application(m: Message, state: FSMContext, description: str):
-    """Общая логика создания заявки после получения всех данных."""
-    data = await state.get_data()
-    channel_url = data['channel_url']
-    price = data['price']
-    username = m.from_user.username or "нет username"
-
-    # Пытаемся получить название канала
-    channel_name = channel_url
+    """Общая логика создания заявки с обработкой ошибок."""
     try:
-        chat_id = "@" + channel_url.split('/')[-1]
-        chat = await m.bot.get_chat(chat_id)
-        channel_name = chat.title
-    except Exception:
-        # Не удалось получить название – оставляем URL как имя и предупреждаем
-        await m.answer("⚠️ Не удалось получить название канала. Заявка будет сохранена с URL в качестве имени.")
+        data = await state.get_data()
+        channel_url = data['channel_url']
+        price = data['price']
+        username = m.from_user.username or "нет username"
 
-    await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, description)
-    await m.answer(
-        f"✅ Заявка на канал «{channel_name}» отправлена.\nМы рассмотрим её в ближайшее время.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
-        ])
-    )
-    await state.clear()
+        # Пытаемся получить название канала
+        channel_name = channel_url
+        try:
+            chat_id = "@" + channel_url.split('/')[-1]
+            chat = await m.bot.get_chat(chat_id)
+            channel_name = chat.title
+        except Exception:
+            await m.answer("⚠️ Не удалось получить название канала. Заявка будет сохранена с URL в качестве имени.")
+
+        # Отправляем заявку
+        await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, description)
+        await m.answer(
+            f"✅ Заявка на канал «{channel_name}» отправлена.\nМы рассмотрим её в ближайшее время.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
+            ])
+        )
+        await state.clear()
+    except Exception as e:
+        # Логируем ошибку и сообщаем пользователю
+        import logging
+        logging.error(f"Ошибка при создании заявки продавца: {e}", exc_info=True)
+        await m.answer("❌ Не удалось отправить заявку. Попробуйте позже или обратитесь в поддержку.")
+        await state.clear()
 
 # ---------- Вход в раздел продавца ----------
 @router.message(F.text == "📢 Стать продавцом")
@@ -89,7 +96,11 @@ async def seller_description(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "seller_channels")
 async def seller_channels(cb: CallbackQuery):
-    channels = await get_seller_channels(cb.from_user.id)
+    try:
+        channels = await get_seller_channels(cb.from_user.id)
+    except Exception:
+        await cb.answer("Не удалось загрузить каналы.", show_alert=True)
+        return
     if not channels:
         await cb.message.edit_text("У вас нет зарегистрированных каналов.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Подать заявку", callback_data="seller_apply")],
