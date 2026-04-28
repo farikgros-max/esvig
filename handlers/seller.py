@@ -19,14 +19,15 @@ async def submit_application(m: Message, state: FSMContext, description: str):
     price = data['price']
     username = m.from_user.username or "нет username"
 
-    # Извлекаем username/ID из ссылки и получаем название канала
+    # Пытаемся получить название канала
+    channel_name = channel_url
     try:
-        # Берём часть после последнего слеша и добавляем @
         chat_id = "@" + channel_url.split('/')[-1]
         chat = await m.bot.get_chat(chat_id)
         channel_name = chat.title
     except Exception:
-        channel_name = channel_url  # fallback
+        # Не удалось получить название – оставляем URL как имя и предупреждаем
+        await m.answer("⚠️ Не удалось получить название канала. Заявка будет сохранена с URL в качестве имени.")
 
     await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, description)
     await m.answer(
@@ -39,7 +40,7 @@ async def submit_application(m: Message, state: FSMContext, description: str):
 
 # ---------- Вход в раздел продавца ----------
 @router.message(F.text == "📢 Стать продавцом")
-@router.message(F.text == "🏪 Биржа каналов")  # на случай, если нажали "Биржа каналов"
+@router.message(F.text == "🏪 Биржа каналов")
 async def seller_start(m: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Подать заявку", callback_data="seller_apply")],
@@ -79,7 +80,6 @@ async def seller_price(m: Message, state: FSMContext):
 
 @router.callback_query(F.data == "skip_description", SellerStates.waiting_for_description)
 async def skip_description(cb: CallbackQuery, state: FSMContext):
-    # Используем cb.message как сообщение для вызова submit_application
     await submit_application(cb.message, state, "")
     await cb.answer()
 
