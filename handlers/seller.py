@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from database import create_seller_application, get_seller_channels, get_seller_applications
+from database import create_seller_application, get_seller_channels
 
 router = Router()
 
@@ -12,7 +12,34 @@ class SellerStates(StatesGroup):
     waiting_for_price = State()
     waiting_for_description = State()
 
+async def submit_application(m: Message, state: FSMContext, description: str):
+    """Общая логика создания заявки после получения всех данных."""
+    data = await state.get_data()
+    channel_url = data['channel_url']
+    price = data['price']
+    username = m.from_user.username or "нет username"
+
+    # Извлекаем username/ID из ссылки и получаем название канала
+    try:
+        # Берём часть после последнего слеша и добавляем @
+        chat_id = "@" + channel_url.split('/')[-1]
+        chat = await m.bot.get_chat(chat_id)
+        channel_name = chat.title
+    except Exception:
+        channel_name = channel_url  # fallback
+
+    await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, description)
+    await m.answer(
+        f"✅ Заявка на канал «{channel_name}» отправлена.\nМы рассмотрим её в ближайшее время.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
+        ])
+    )
+    await state.clear()
+
+# ---------- Вход в раздел продавца ----------
 @router.message(F.text == "📢 Стать продавцом")
+@router.message(F.text == "🏪 Биржа каналов")  # на случай, если нажали "Биржа каналов"
 async def seller_start(m: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Подать заявку", callback_data="seller_apply")],
@@ -44,32 +71,21 @@ async def seller_price(m: Message, state: FSMContext):
         return
     price = int(m.text)
     await state.update_data(price=price)
-    await m.answer("📝 Введите описание вашего канала (или нажмите 'Пропустить', отправив любое слово):")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="skip_description")]
+    ])
+    await m.answer("📝 Введите описание вашего канала или нажмите кнопку ниже:", reply_markup=kb)
     await state.set_state(SellerStates.waiting_for_description)
+
+@router.callback_query(F.data == "skip_description", SellerStates.waiting_for_description)
+async def skip_description(cb: CallbackQuery, state: FSMContext):
+    # Используем cb.message как сообщение для вызова submit_application
+    await submit_application(cb.message, state, "")
+    await cb.answer()
 
 @router.message(SellerStates.waiting_for_description)
 async def seller_description(m: Message, state: FSMContext):
-    desc = m.text.strip()
-    data = await state.get_data()
-    channel_url = data['channel_url']
-    price = data['price']
-    # Получаем username из ссылки для уведомления
-    username = m.from_user.username or "нет username"
-    # Пытаемся получить название канала
-    try:
-        chat = await m.bot.get_chat(channel_url.split('/')[-1])
-        channel_name = chat.title
-    except:
-        channel_name = channel_url
-    await create_seller_application(m.from_user.id, username, channel_url, channel_name, price, desc)
-    await m.answer(
-        f"✅ Заявка на канал «{channel_name}» отправлена.\n"
-        "Мы рассмотрим её в ближайшее время.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
-        ])
-    )
-    await state.clear()
+    await submit_application(m, state, m.text.strip())
 
 @router.callback_query(F.data == "seller_channels")
 async def seller_channels(cb: CallbackQuery):
