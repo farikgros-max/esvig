@@ -161,16 +161,19 @@ async def auto_process_orders(bot):
         try:
             conn = await get_connection()
             now = datetime.now()
-            await conn.execute(
-                "UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1",
-                now - timedelta(hours=24)
-            )
-            await conn.execute(
-                "UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1",
-                now - timedelta(hours=48)
-            )
+            # используем транзакцию, чтобы обе операции были атомарными
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1",
+                    now - timedelta(hours=24)
+                )
+                await conn.execute(
+                    "UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1",
+                    now - timedelta(hours=48)
+                )
         except Exception as e:
-            print(f"[AUTO] Ошибка автообработки: {e}")
+            print(f"[AUTO] Ошибка автообработки (будет повторено): {e}")
+            await close_db()
         await asyncio.sleep(900)
 
 # ---------- Пользователи и баланс ----------
