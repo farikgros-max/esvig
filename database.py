@@ -66,41 +66,39 @@ async def _load_channels_from_db():
     print("[MEM] Не удалось обновить кеш каналов, используется предыдущий")
 
 async def fix_seller_channels():
-    """Проверяет и исправляет типы столбцов в таблице seller_channels."""
+    """
+    Добавляет недостающие столбцы в таблицу seller_channels, если их нет.
+    Не изменяет ограничения (NOT NULL и т.п.), чтобы избежать ошибок миграции.
+    """
     conn = await get_connection()
+    # Получим список существующих столбцов
     try:
         columns = await conn.fetch(
-            "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'seller_channels'"
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'seller_channels'"
         )
+        existing_cols = {r['column_name'] for r in columns}
     except Exception:
         return
-    col_info = {r['column_name']: (r['data_type'], r['is_nullable']) for r in columns}
-    desired = {
-        'user_id': ('bigint', 'NO'),
-        'username': ('text', 'YES'),
-        'channel_url': ('text', 'NO'),
-        'channel_name': ('text', 'YES'),
-        'price': ('integer', 'YES'),
-        'description': ('text', 'YES'),
-        'status': ('text', 'YES'),
-        'created_at': ('timestamp with time zone', 'YES'),
-        'updated_at': ('timestamp with time zone', 'YES')
-    }
-    # Убедимся, что seller_id отсутствует или не вызывает проблем
-    if 'seller_id' in col_info:
-        await conn.execute('ALTER TABLE seller_channels ALTER COLUMN seller_id DROP NOT NULL')
 
-    for col, (desired_type, nullable) in desired.items():
-        if col not in col_info:
-            await conn.execute(f'ALTER TABLE seller_channels ADD COLUMN {col} {desired_type}')
-        else:
-            current_type, current_nullable = col_info[col]
-            if current_type != desired_type:
-                await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} TYPE {desired_type} USING {col}::{desired_type}')
-            if nullable == 'NO' and current_nullable == 'YES':
-                await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} SET NOT NULL')
-            elif nullable == 'YES' and current_nullable == 'NO':
-                await conn.execute(f'ALTER TABLE seller_channels ALTER COLUMN {col} DROP NOT NULL')
+    # Желаемые столбцы с типами (без проверки nullable)
+    desired = {
+        'user_id': 'bigint',
+        'username': 'text',
+        'channel_url': 'text',
+        'channel_name': 'text',
+        'price': 'integer',
+        'description': 'text',
+        'status': 'text',
+        'created_at': 'timestamp with time zone',
+        'updated_at': 'timestamp with time zone'
+    }
+
+    for col, col_type in desired.items():
+        if col not in existing_cols:
+            try:
+                await conn.execute(f'ALTER TABLE seller_channels ADD COLUMN {col} {col_type}')
+            except Exception as e:
+                print(f"Не удалось добавить столбец {col}: {e}")
 
 async def init_db():
     conn = await get_connection()
@@ -119,8 +117,10 @@ async def init_db():
     await conn.execute('''CREATE TABLE IF NOT EXISTS seller_channels (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
         username TEXT, channel_url TEXT NOT NULL, channel_name TEXT, price INTEGER DEFAULT 0, description TEXT DEFAULT '',
         status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())''')
-    # Исправляем типы, если таблица уже существовала
+
+    # Добавляем недостающие столбцы (без изменения ограничений)
     await fix_seller_channels()
+
     # Прочие миграции
     try: await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
     except: pass
@@ -128,11 +128,13 @@ async def init_db():
     except: pass
     try: await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
     except: pass
+
     exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
     if exists == 0:
         default_cats = [('news', 'Новостные'), ('trading', 'Торговые'), ('analytics', 'Аналитика'),
                         ('nft', 'NFT'), ('memes', 'Мемкоины'), ('defi', 'DeFi')]
         await conn.executemany('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', default_cats)
+
     await _load_channels_from_db()
 
 # ---------- АВТОМАТИЗАЦИЯ ----------
@@ -142,8 +144,10 @@ async def auto_process_orders(bot):
             conn = await get_connection()
             now = datetime.now()
             async with conn.transaction():
-                await conn.execute("UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1", now - timedelta(hours=24))
-                await conn.execute("UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1", now - timedelta(hours=48))
+                await conn.execute("UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1",
+                                   now - timedelta(hours=24))
+                await conn.execute("UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1",
+                                   now - timedelta(hours=48))
         except Exception as e:
             print(f"[AUTO] Ошибка автообработки (будет повторено): {e}")
             await close_db()
