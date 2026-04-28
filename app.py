@@ -74,12 +74,15 @@ async def startup():
     print("Бот готов (Long Polling)")
 
 async def db_health_check():
+    """Проверяет соединение с БД каждые 5 минут, игнорируя transient ошибки."""
     while True:
         try:
             conn = await get_connection()
-            await conn.execute('SELECT 1')
+            await asyncio.wait_for(conn.execute('SELECT 1'), timeout=5)
+        except (asyncio.TimeoutError, asyncpg.exceptions.InterfaceError) as e:
+            print(f"[HEALTH] Временная проблема с БД: {e}")
         except Exception as e:
-            print(f"[HEALTH] Проблема с БД: {e}")
+            print(f"[HEALTH] Критическая проблема с БД: {e}")
             await close_db()
         await asyncio.sleep(300)
 
