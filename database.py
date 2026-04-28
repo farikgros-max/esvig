@@ -127,7 +127,7 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-    # Новые таблицы для биржи
+    # Таблица для биржи
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS seller_channels (
             id SERIAL PRIMARY KEY,
@@ -633,7 +633,7 @@ async def get_all_user_ids() -> list:
     rows = await conn.fetch('SELECT user_id FROM users')
     return [r['user_id'] for r in rows]
 
-# ========== ФУНКЦИИ ДЛЯ БИРЖИ ==========
+# ========== БИРЖА ==========
 async def create_seller_application(user_id: int, username: str, channel_url: str, channel_name: str, price: int, description: str = '') -> int:
     conn = await get_connection()
     app_id = await conn.fetchval(
