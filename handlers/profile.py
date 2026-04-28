@@ -7,7 +7,7 @@ from database import (get_or_create_user, get_user_daily_info, get_orders_by_use
                       get_user_balance, update_user_balance, debit_balance,
                       get_order_by_id, update_order_status, return_balance,
                       get_user_transactions, process_pending_orders,
-                      get_referral_stats, save_order, update_user_referral_code)
+                      get_referral_stats, save_order)
 from states import OrderForm, WithdrawStates
 from texts import (PROFILE_TEMPLATE, DEPOSIT_PROMPT, MIN_DEPOSIT_ERROR,
                    CHECK_PAYMENT_MESSAGE, WITHDRAW_MIN)
@@ -54,7 +54,7 @@ async def profile(m: Message):
     except Exception as e:
         await m.answer(f"❌ Ошибка загрузки профиля: {e}", reply_markup=get_main_keyboard(m.from_user.id))
 
-# ---------- Реферальная программа (исправлено) ----------
+# ---------- Реферальная программа ----------
 @router.callback_query(F.data == "referral_program")
 async def referral_program(cb: CallbackQuery):
     user = await get_or_create_user(cb.from_user.id)
@@ -62,6 +62,7 @@ async def referral_program(cb: CallbackQuery):
     if not code:
         code = f"REF{cb.from_user.id}"
         try:
+            from database import update_user_referral_code
             await update_user_referral_code(cb.from_user.id, code)
             user['referral_code'] = code
         except Exception as e:
@@ -69,33 +70,27 @@ async def referral_program(cb: CallbackQuery):
     stats = await get_referral_stats(cb.from_user.id)
     bot = await cb.bot.get_me()
     link = f"https://t.me/{bot.username}?start=ref_{code}"
-
-    # Формируем описание уровня и прогресс
-    level_text = f"{stats['level']} (до {stats['percent']}%)"
-    progress = ""
-    if stats['next_level']:
-        progress = f"До уровня {stats['next_level']}: {stats['needed']} чел."
-    else:
-        progress = "Максимальный уровень!"
-
     text = (
         f"👥 Реферальная программа\n\n"
         f"🔗 Ваша ссылка:\n{link}\n\n"
-        f"👥 Приглашено: {stats['invited']}\n"
-        f"📈 Ваш уровень: {level_text}\n"
+        f"👥 Приглашено всего: {stats['invited']}\n"
         f"   ├ 1-10 чел. → 1%\n"
         f"   ├ 11-50 чел. → 2%\n"
         f"   └ 51+ чел. → 3.5%\n\n"
-        f"💰 Заработано: {stats['bonuses']}$\n"
-        f"💳 Доступно к выводу: {user['balance']}$\n"
-        f"{progress}\n\n"
-        "Приглашайте друзей и получайте бонусы с их заказов!"
+        f"💰 Заработано за всё время: {stats['bonuses']}$\n"
+        f"💳 Доступно к выводу: {user['balance']}$\n\n"
+        "Приглашайте друзей и получайте до 3.5% от их заказов!"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw_start"),
-         InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
+        [InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw_start")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_profile")]
     ])
     await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data == "back_to_profile")
+async def back_to_profile(cb: CallbackQuery):
+    await profile(cb.message)
     await cb.answer()
 
 # ---------- Вывод средств ----------
@@ -366,7 +361,7 @@ async def check_payment_handler(cb: CallbackQuery):
         )
     await cb.answer()
 
-# ---------- Заявки пользователя ----------
+# ---------- Заявки пользователя (показываем и заявки на вывод) ----------
 @router.callback_query(F.data == "my_orders")
 async def my_ords(cb: CallbackQuery):
     ords = await get_orders_by_user(cb.from_user.id, 10, only_completed=False)
@@ -399,7 +394,7 @@ async def order_details(cb: CallbackQuery):
     if not ordd or ordd['user_id'] != cb.from_user.id:
         await cb.answer("Заявка не найдена", True)
         return
-    items = "\n".join(f"• {it['name']} — {it['price']}$" for it in ordd['cart'])
+    items = "\n".join(f"• {it['name']} — {it['price']}$" for it in ordd['cart']) if ordd['cart'] else "Заявка на вывод"
     await cb.message.edit_text(
         f"📄 Заявка #{oid}\n📌 Статус: {ordd['status']}\n💰 Сумма: {ordd['total']}$\n\n📦 Состав:\n{items}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="my_orders")]])
