@@ -6,10 +6,9 @@ def cancel_keyboard():
 
 def get_main_keyboard(user_id: int = None):
     buttons = [
-        [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🛒 Корзина")],
-        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ О сервисе")],
-        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")],
-        [KeyboardButton(text="🏪 Биржа каналов"), KeyboardButton(text="📢 Стать продавцом")]
+        [KeyboardButton(text="📋 Каталог каналов"), KeyboardButton(text="🏪 Биржа каналов")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🛒 Корзина")],
+        [KeyboardButton(text="❓ FAQ"), KeyboardButton(text="📞 Контакты")]
     ]
     if user_id in ADMIN_IDS:
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
@@ -28,6 +27,29 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="📋 Заявки продавцов", callback_data="admin_seller_applications")]
+    ])
+
+async def get_seller_categories_keyboard(get_all_categories):
+    """Клавиатура выбора категории для продавца."""
+    cats = await get_all_categories()
+    if not cats:
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="seller_back")]])
+    rows = []
+    for i in range(0, len(cats), 2):
+        row = []
+        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"seller_cat_{cats[i]['id']}"))
+        if i+1 < len(cats):
+            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"seller_cat_{cats[i+1]['id']}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="seller_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def get_seller_main_keyboard():
+    """Кнопки внутри раздела биржи (для одобренного продавца)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Мои каналы", callback_data="seller_channels")],
+        [InlineKeyboardButton(text="➕ Добавить канал", callback_data="seller_apply")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="seller_back")]
     ])
 
 async def get_categories_keyboard(get_all_categories):
