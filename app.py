@@ -48,6 +48,7 @@ async def startup():
     from handlers.admin import router as admin_router
     from handlers.info import router as info_router
     from handlers.referral import router as referral_router
+    from handlers.seller import router as seller_router  # новый роутер
 
     dp_instance.include_router(start_router)
     dp_instance.include_router(catalog_router)
@@ -56,6 +57,7 @@ async def startup():
     dp_instance.include_router(admin_router)
     dp_instance.include_router(info_router)
     dp_instance.include_router(referral_router)
+    dp_instance.include_router(seller_router)  # подключаем продавцов
 
     # Middleware (сначала общий перехватчик, потом остальные)
     dp_instance.message.middleware(ErrorMiddleware())
