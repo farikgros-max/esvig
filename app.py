@@ -14,6 +14,7 @@ from config import (BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY,
                     WEBHOOK_URL, SECRET_TOKEN, CHANNEL_ID, ORDER_CHANNEL_ID)
 from database import init_db, update_user_balance, auto_process_orders, get_connection, close_db
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
+from utils import trim_admin_log
 
 # Ротация логов
 logging.basicConfig(
@@ -73,17 +74,25 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
+# ---------- Фоновая проверка здоровья и очистка логов ----------
 async def db_health_check():
-    """Проверяет соединение с БД каждые 5 минут, игнорируя transient ошибки."""
+    """Проверяет соединение с БД каждые 5 минут, раз в час чистит логи."""
+    last_trim = 0
     while True:
+        # Проверка БД
         try:
             conn = await get_connection()
             await asyncio.wait_for(conn.execute('SELECT 1'), timeout=5)
-        except (asyncio.TimeoutError, asyncpg.exceptions.InterfaceError) as e:
-            print(f"[HEALTH] Временная проблема с БД: {e}")
-        except Exception as e:
-            print(f"[HEALTH] Критическая проблема с БД: {e}")
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"[HEALTH] Проблема с БД: {e}")
             await close_db()
+
+        # Очистка логов раз в час (3600 секунд)
+        now = asyncio.get_event_loop().time()
+        if now - last_trim > 3600:
+            trim_admin_log()
+            last_trim = now
+
         await asyncio.sleep(300)
 
 # Пинг-команда
