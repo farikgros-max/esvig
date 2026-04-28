@@ -2,17 +2,15 @@ import asyncpg
 import json
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# ---------- Безопасное подключение с авто-восстановлением ----------
 _conn: asyncpg.Connection = None
 _lock = asyncio.Lock()
 _channels_dict = {}
 
 async def get_connection() -> asyncpg.Connection:
-    """Возвращает текущее подключение, пересоздаёт при обрыве."""
     global _conn
     if _conn is None or _conn.is_closed():
         async with _lock:
@@ -37,7 +35,6 @@ async def close_db():
             pass
         _conn = None
 
-# ---------- Безопасная загрузка каналов в память ----------
 async def _load_channels_from_db():
     global _channels_dict
     for attempt in range(3):
@@ -66,12 +63,10 @@ async def _load_channels_from_db():
             print(f"[MEM] Ошибка загрузки каналов (попытка {attempt+1}): {e}")
             await close_db()
             await asyncio.sleep(2)
-    # Если все попытки неудачны – оставляем старый кеш
     print("[MEM] Не удалось обновить кеш каналов, используется предыдущий")
 
 async def init_db():
     conn = await get_connection()
-    # Создание таблиц (без изменений)
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS categories (
             id SERIAL PRIMARY KEY,
@@ -124,16 +119,39 @@ async def init_db():
             description TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW()
         )''')
-    # Миграции (без изменений)
+    # Таблицы для биржи каналов
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS seller_channels (
+            id SERIAL PRIMARY KEY,
+            seller_id BIGINT NOT NULL,
+            channel_name TEXT NOT NULL,
+            channel_url TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            price INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )''')
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS channel_calendar (
+            id SERIAL PRIMARY KEY,
+            seller_channel_id INTEGER REFERENCES seller_channels(id) ON DELETE CASCADE,
+            booking_date DATE NOT NULL,
+            status TEXT DEFAULT 'free',
+            UNIQUE(seller_channel_id, booking_date)
+        )''')
+    await conn.execute('''
+        CREATE TABLE IF NOT EXISTS bookings (
+            id SERIAL PRIMARY KEY,
+            seller_channel_id INTEGER REFERENCES seller_channels(id),
+            buyer_id BIGINT NOT NULL,
+            order_id INTEGER REFERENCES orders(id),
+            booking_date DATE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )''')
+    # Миграции
     try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
-    except Exception:
-        pass
-    try:
         await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS inviter_id BIGINT')
-    except Exception:
-        pass
-    try:
         await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
     except Exception:
         pass
@@ -161,7 +179,6 @@ async def auto_process_orders(bot):
         try:
             conn = await get_connection()
             now = datetime.now()
-            # используем транзакцию, чтобы обе операции были атомарными
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1",
@@ -603,11 +620,81 @@ async def backup_database():
     backup['orders'] = [dict(r) for r in orders]
     trans = await conn.fetch('SELECT * FROM transactions')
     backup['transactions'] = [dict(r) for r in trans]
+    seller_channels = await conn.fetch('SELECT * FROM seller_channels')
+    backup['seller_channels'] = [dict(r) for r in seller_channels]
+    calendar = await conn.fetch('SELECT * FROM channel_calendar')
+    backup['channel_calendar'] = [dict(r) for r in calendar]
+    bookings = await conn.fetch('SELECT * FROM bookings')
+    backup['bookings'] = [dict(r) for r in bookings]
 
     filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(backup, f, ensure_ascii=False, indent=2, default=str)
     return filename
+
+# ---------- БИРЖА КАНАЛОВ ----------
+async def submit_seller_channel(seller_id: int, channel_name: str, channel_url: str, description: str, price: int) -> int:
+    conn = await get_connection()
+    return await conn.fetchval(
+        '''INSERT INTO seller_channels (seller_id, channel_name, channel_url, description, price, status)
+           VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING id''',
+        seller_id, channel_name, channel_url, description, price
+    )
+
+async def get_seller_channels(status: str = 'pending') -> list:
+    conn = await get_connection()
+    rows = await conn.fetch(
+        'SELECT id, seller_id, channel_name, channel_url, description, price, status FROM seller_channels WHERE status = $1',
+        status
+    )
+    return [dict(r) for r in rows]
+
+async def update_seller_channel_status(channel_id: int, status: str):
+    conn = await get_connection()
+    await conn.execute('UPDATE seller_channels SET status = $1 WHERE id = $2', status, channel_id)
+
+async def get_seller_channel_by_id(channel_id: int):
+    conn = await get_connection()
+    r = await conn.fetchrow('SELECT * FROM seller_channels WHERE id = $1', channel_id)
+    return dict(r) if r else None
+
+async def set_calendar_dates(seller_channel_id: int, dates: list[date]):
+    conn = await get_connection()
+    async with conn.transaction():
+        for d in dates:
+            await conn.execute(
+                '''INSERT INTO channel_calendar (seller_channel_id, booking_date, status)
+                   VALUES ($1, $2, 'free') ON CONFLICT (seller_channel_id, booking_date) DO NOTHING''',
+                seller_channel_id, d
+            )
+
+async def get_calendar_dates(seller_channel_id: int) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch(
+        'SELECT booking_date, status FROM channel_calendar WHERE seller_channel_id = $1 AND booking_date >= CURRENT_DATE ORDER BY booking_date',
+        seller_channel_id
+    )
+    return [{"date": r['booking_date'], "status": r['status']} for r in rows]
+
+async def book_date(seller_channel_id: int, buyer_id: int, order_id: int, booking_date: date) -> bool:
+    conn = await get_connection()
+    async with conn.transaction():
+        # Проверяем, свободна ли дата
+        status = await conn.fetchval(
+            'SELECT status FROM channel_calendar WHERE seller_channel_id = $1 AND booking_date = $2 FOR UPDATE',
+            seller_channel_id, booking_date
+        )
+        if status != 'free':
+            return False
+        await conn.execute(
+            "UPDATE channel_calendar SET status = 'booked' WHERE seller_channel_id = $1 AND booking_date = $2",
+            seller_channel_id, booking_date
+        )
+        await conn.execute(
+            'INSERT INTO bookings (seller_channel_id, buyer_id, order_id, booking_date) VALUES ($1, $2, $3, $4)',
+            seller_channel_id, buyer_id, order_id, booking_date
+        )
+        return True
 
 # ---------- РАССЫЛКА ----------
 async def get_all_user_ids() -> list:
