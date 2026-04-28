@@ -66,12 +66,8 @@ async def _load_channels_from_db():
     print("[MEM] Не удалось обновить кеш каналов, используется предыдущий")
 
 async def fix_seller_channels():
-    """
-    Добавляет недостающие столбцы в таблицу seller_channels, если их нет.
-    Не изменяет ограничения (NOT NULL и т.п.), чтобы избежать ошибок миграции.
-    """
+    """Добавляет недостающие столбцы в таблицу seller_channels, если их нет."""
     conn = await get_connection()
-    # Получим список существующих столбцов
     try:
         columns = await conn.fetch(
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'seller_channels'"
@@ -80,7 +76,6 @@ async def fix_seller_channels():
     except Exception:
         return
 
-    # Желаемые столбцы с типами (без проверки nullable)
     desired = {
         'user_id': 'bigint',
         'username': 'text',
@@ -90,7 +85,8 @@ async def fix_seller_channels():
         'description': 'text',
         'status': 'text',
         'created_at': 'timestamp with time zone',
-        'updated_at': 'timestamp with time zone'
+        'updated_at': 'timestamp with time zone',
+        'category_id': 'integer'   # ← новый столбец для категории
     }
 
     for col, col_type in desired.items():
@@ -116,12 +112,11 @@ async def init_db():
         created_at TIMESTAMPTZ DEFAULT NOW())''')
     await conn.execute('''CREATE TABLE IF NOT EXISTS seller_channels (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
         username TEXT, channel_url TEXT NOT NULL, channel_name TEXT, price INTEGER DEFAULT 0, description TEXT DEFAULT '',
-        status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())''')
+        status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
+        category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL)''')
 
-    # Добавляем недостающие столбцы (без изменения ограничений)
     await fix_seller_channels()
 
-    # Прочие миграции
     try: await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
     except: pass
     try: await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS inviter_id BIGINT')
@@ -144,10 +139,8 @@ async def auto_process_orders(bot):
             conn = await get_connection()
             now = datetime.now()
             async with conn.transaction():
-                await conn.execute("UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1",
-                                   now - timedelta(hours=24))
-                await conn.execute("UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1",
-                                   now - timedelta(hours=48))
+                await conn.execute("UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1", now - timedelta(hours=24))
+                await conn.execute("UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1", now - timedelta(hours=48))
         except Exception as e:
             print(f"[AUTO] Ошибка автообработки (будет повторено): {e}")
             await close_db()
@@ -472,11 +465,11 @@ async def get_all_user_ids() -> list:
     return [r['user_id'] for r in rows]
 
 # ========== БИРЖА ==========
-async def create_seller_application(user_id: int, username: str, channel_url: str, channel_name: str, price: int, description: str = '') -> int:
+async def create_seller_application(user_id: int, username: str, channel_url: str, channel_name: str, price: int, description: str = '', category_id: int = None) -> int:
     conn = await get_connection()
-    return await conn.fetchval('''INSERT INTO seller_channels (user_id, username, channel_url, channel_name, price, description, status)
-                                  VALUES ($1, $2, $3, $4, $5, $6, 'pending') RETURNING id''',
-                               user_id, username, channel_url, channel_name, price, description)
+    return await conn.fetchval('''INSERT INTO seller_channels (user_id, username, channel_url, channel_name, price, description, status, category_id)
+                                  VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7) RETURNING id''',
+                               user_id, username, channel_url, channel_name, price, description, category_id)
 
 async def get_seller_applications(status: str = 'pending') -> list:
     conn = await get_connection()
@@ -496,6 +489,13 @@ async def reject_seller_application(application_id: int) -> bool:
 
 async def get_seller_channels(user_id: int) -> list:
     conn = await get_connection()
-    rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at
+    rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at, category_id
                                FROM seller_channels WHERE user_id = $1 ORDER BY created_at DESC''', user_id)
+    return [dict(r) for r in rows]
+
+async def get_approved_seller_channels(user_id: int) -> list:
+    """Возвращает список одобренных каналов продавца."""
+    conn = await get_connection()
+    rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at
+                               FROM seller_channels WHERE user_id = $1 AND status = 'approved' ORDER BY created_at DESC''', user_id)
     return [dict(r) for r in rows]
