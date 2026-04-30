@@ -14,19 +14,34 @@ def get_main_keyboard(user_id: int = None):
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
+# ---------- НОВОЕ ГЛАВНОЕ МЕНЮ АДМИНА ----------
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list"),
-         InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders")],
+        [InlineKeyboardButton(text="📋 Каналы", callback_data="admin_channels_menu")],
+        [InlineKeyboardButton(text="📋 Заявки", callback_data="admin_orders_menu")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")]
+    ])
+
+# ---------- ПОДМЕНЮ «КАНАЛЫ» ----------
+def get_admin_channels_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list")],
+        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories")],
         [InlineKeyboardButton(text="➕ Добавить канал", callback_data="admin_add"),
          InlineKeyboardButton(text="❌ Удалить канал", callback_data="admin_remove")],
         [InlineKeyboardButton(text="⚡ Быстрое добавление", callback_data="quick_add"),
          InlineKeyboardButton(text="📥 Массовое добавление", callback_data="bulk_add")],
-        [InlineKeyboardButton(text="🏷 Управление категориями", callback_data="admin_categories"),
-         InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="📋 Заявки продавцов", callback_data="admin_seller_applications")]
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+    ])
+
+# ---------- ПОДМЕНЮ «ЗАЯВКИ» ----------
+def get_admin_orders_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Заявки покупателей", callback_data="admin_orders")],
+        [InlineKeyboardButton(text="📋 Заявки продавцов", callback_data="admin_seller_applications")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
     ])
 
 async def get_seller_categories_keyboard(get_all_categories):
@@ -139,7 +154,7 @@ def get_back_keyboard():
 async def get_admin_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
     if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")]])
     rows = []
     for i in range(0, len(cats), 2):
         row = []
@@ -158,7 +173,7 @@ async def get_admin_categories_keyboard(get_all_categories):
         InlineKeyboardButton(text="🔍 Все каналы", callback_data="admin_cat_all"),
         InlineKeyboardButton(text="🚫 Без категории", callback_data="admin_cat_none")
     ])
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def get_admin_list_keyboard(channels_dict, page=0, category_id=None):
@@ -189,7 +204,7 @@ def get_admin_remove_keyboard(channels_dict):
     btns = []
     for cid, inf in channels_dict.items():
         btns.append([InlineKeyboardButton(text=f"❌ {inf['name']} ({inf['price']}$)", callback_data=f"admin_del_{cid}")])
-    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")])
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
 def get_admin_orders_keyboard(orders):
@@ -198,7 +213,7 @@ def get_admin_orders_keyboard(orders):
     for o in orders:
         emoji = {'в обработке':'🟡','оплачена':'🟢','выполнена':'✅','отменена':'❌', 'ожидает оплаты':'🕒', 'вывод':'💰'}
         btns.append([InlineKeyboardButton(text=f"{emoji.get(o['status'],'⚪')} #{o['id']} | {o['username']} | {o['total']}$ | {o['status']}", callback_data=f"admin_order_{o['id']}")])
-    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_orders")])
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
 def get_edit_channel_keyboard(cid):
@@ -237,7 +252,7 @@ async def get_categories_admin_keyboard(get_all_categories):
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")]
         ])
     rows = []
     for i in range(0, len(cats), 2):
@@ -247,7 +262,7 @@ async def get_categories_admin_keyboard(get_all_categories):
             row.append(InlineKeyboardButton(text=f"{cats[i+1]['display_name']} ({cats[i+1]['name']})", callback_data=f"admin_category_{cats[i+1]['id']}"))
         rows.append(row)
     rows.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="admin_add_category")])
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def get_category_actions_keyboard(cat_id):
@@ -265,7 +280,7 @@ def get_confirm_delete_category_keyboard(cat_id):
 async def get_category_selection_keyboard(get_all_categories, callback_prefix):
     cats = await get_all_categories()
     if not cats:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")]])
     rows = []
     for i in range(0, len(cats), 2):
         row = []
@@ -273,5 +288,5 @@ async def get_category_selection_keyboard(get_all_categories, callback_prefix):
         if i+1 < len(cats):
             row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"{callback_prefix}_{cats[i+1]['id']}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_channels")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
