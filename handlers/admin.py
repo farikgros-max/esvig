@@ -41,6 +41,11 @@ class AdminSupportStates(StatesGroup):
     waiting_for_broadcast_message = State()
     waiting_for_broadcast_confirm = State()
 
+class QuickAddStates(StatesGroup):
+    waiting_for_channel_link = State()
+    waiting_for_price = State()
+    waiting_for_category = State()
+
 # ---------- Универсальный сброс любого состояния ----------
 @router.message(Command("cancel"))
 async def cancel_any_state(m: Message, state: FSMContext):
@@ -61,7 +66,6 @@ async def adm_back(cb: CallbackQuery):
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
     await cb.answer()
 
-# ---------- Меню «Каналы» ----------
 @router.callback_query(F.data == "admin_channels_menu")
 async def admin_channels_menu(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
@@ -73,7 +77,6 @@ async def admin_channels_menu(cb: CallbackQuery):
 async def back_to_channels_menu(cb: CallbackQuery):
     await admin_channels_menu(cb)
 
-# ---------- Меню «Заявки» ----------
 @router.callback_query(F.data == "admin_orders_menu")
 async def admin_orders_menu(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
@@ -168,7 +171,7 @@ async def exec_delete_category(cb: CallbackQuery):
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
-# ---------- Список каналов (внутри меню «Каналы») ----------
+# ---------- Список каналов ----------
 @router.callback_query(F.data == "admin_list")
 async def admin_list_categories(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
@@ -265,7 +268,7 @@ async def admin_list_page(cb: CallbackQuery):
 
 @router.callback_query(F.data == "admin_list_back")
 async def admin_list_back(cb: CallbackQuery):
-    await admin_channels_menu(cb)   # возврат в меню каналов
+    await admin_channels_menu(cb)
 
 # ---------- Просмотр канала ----------
 @router.callback_query(F.data.startswith("admin_view_"))
@@ -718,11 +721,6 @@ async def update_subs_cmd(m: Message):
     await m.answer(f"✅ Обновлено: {updated} каналов\n❌ Не удалось: {failed}")
 
 # ---------- Быстрое добавление канала ----------
-class QuickAddStates(StatesGroup):
-    waiting_for_channel_link = State()
-    waiting_for_price = State()
-    waiting_for_category = State()
-
 @router.callback_query(F.data == "quick_add")
 async def quick_add_start(cb: CallbackQuery, state: FSMContext):
     if not await admin_only_callback(cb, show_alert=False):
@@ -768,7 +766,6 @@ async def quick_add_price_received(m: Message, state: FSMContext):
         return
     price = int(m.text)
     await state.update_data(quick_price=price)
-    # Выбор категории
     cats = await get_all_categories()
     kb_rows = []
     for i in range(0, len(cats), 2):
@@ -871,7 +868,7 @@ async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
     await cb.answer()
 
-# ---------- Заявки (покупателей и продавцов) ----------
+# ---------- Заявки покупателей ----------
 @router.callback_query(F.data == "admin_orders")
 async def adm_orders(cb: CallbackQuery):
     if not await admin_only_callback(cb):
@@ -1177,38 +1174,60 @@ async def approve_seller(cb: CallbackQuery):
         return
     app_id = int(cb.data.split("_")[2])
     success = await approve_seller_application(app_id)
-    if success:
-        await cb.answer("Заявка одобрена!", show_alert=False)
-        log_admin_action(cb.from_user.id, f"approved seller application {app_id}")
-
-        app = await get_seller_application_by_id(app_id)
-        if app:
-            # уведомление продавцу
-            try:
-                await cb.bot.send_message(
-                    app['user_id'],
-                    f"✅ Ваша заявка на канал «{app['channel_name']}» одобрена! Теперь он доступен в каталоге."
-                )
-            except Exception as e:
-                print(f"Не удалось уведомить продавца {app['user_id']}: {e}")
-
-            # Добавление канала в общий каталог
-            try:
-                new_id = f"channel_{int(time.time())}"
-                await add_channel(
-                    ch_id=new_id,
-                    name=app['channel_name'],
-                    price=app['price'],
-                    subscribers=0,
-                    url=app['channel_url'],
-                    desc=app.get('description', ''),
-                    category_id=app.get('category_id')
-                )
-                log_admin_action(cb.from_user.id, f"added channel {new_id} from seller application {app_id}")
-            except Exception as e:
-                print(f"Ошибка добавления канала из заявки {app_id}: {e}")
-    else:
+    if not success:
         await cb.answer("Не удалось одобрить заявку", show_alert=True)
+        await admin_seller_applications(cb)
+        return
+
+    await cb.answer("Заявка одобрена!", show_alert=False)
+    log_admin_action(cb.from_user.id, f"approved seller application {app_id}")
+
+    app = await get_seller_application_by_id(app_id)
+    if not app:
+        await cb.answer("Данные заявки не найдены", show_alert=True)
+        return
+
+    # Уведомление продавцу
+    try:
+        await cb.bot.send_message(
+            app['user_id'],
+            f"✅ Ваша заявка на канал «{app['channel_name']}» одобрена!\n"
+            f"Канал добавлен в каталог по цене {app['price']}$.\n"
+            f"Ссылка для покупателей: {app['channel_url']}"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось уведомить продавца {app['user_id']}: {e}")
+
+    # Получаем реальное количество подписчиков
+    subscribers = 0
+    try:
+        match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', app['channel_url'])
+        if match:
+            username = match.group(1)
+            chat = await cb.bot.get_chat(f"@{username}" if not username.startswith("@") else username)
+            try:
+                subscribers = await cb.bot.get_chat_member_count(chat.id)
+            except Exception:
+                subscribers = 0
+    except Exception as e:
+        logging.warning(f"Не удалось получить подписчиков для {app['channel_url']}: {e}")
+
+    # Добавляем канал в общий каталог
+    try:
+        new_id = f"channel_{int(time.time())}"
+        await add_channel(
+            ch_id=new_id,
+            name=app['channel_name'],
+            price=app['price'],
+            subscribers=subscribers,
+            url=app['channel_url'],
+            desc=app.get('description', ''),
+            category_id=app.get('category_id')
+        )
+        log_admin_action(cb.from_user.id, f"added channel {new_id} from seller application {app_id}")
+    except Exception as e:
+        logging.error(f"Ошибка добавления канала из заявки {app_id}: {e}")
+
     await admin_seller_applications(cb)
 
 @router.callback_query(F.data.startswith("reject_seller_"))
