@@ -14,7 +14,6 @@ def get_main_keyboard(user_id: int = None):
         buttons.append([KeyboardButton(text="🔑 Админ‑панель")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-# ---------- НОВОЕ ГЛАВНОЕ МЕНЮ АДМИНА ----------
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Каналы", callback_data="admin_channels_menu")],
@@ -24,7 +23,6 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin_balance")]
     ])
 
-# ---------- ПОДМЕНЮ «КАНАЛЫ» ----------
 def get_admin_channels_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Список каналов", callback_data="admin_list")],
@@ -36,7 +34,6 @@ def get_admin_channels_menu_keyboard():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
     ])
 
-# ---------- ПОДМЕНЮ «ЗАЯВКИ» ----------
 def get_admin_orders_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Заявки покупателей", callback_data="admin_orders")],
@@ -45,7 +42,6 @@ def get_admin_orders_menu_keyboard():
     ])
 
 async def get_seller_categories_keyboard(get_all_categories):
-    """Клавиатура выбора категории для продавца."""
     cats = await get_all_categories()
     if not cats:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="seller_back")]])
@@ -60,7 +56,6 @@ async def get_seller_categories_keyboard(get_all_categories):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def get_seller_main_keyboard():
-    """Кнопки внутри раздела биржи (для одобренного продавца)."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Мои каналы", callback_data="seller_channels")],
         [InlineKeyboardButton(text="➕ Добавить канал", callback_data="seller_apply")],
@@ -150,7 +145,6 @@ def get_cart_keyboard(cart):
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]])
 
-# ---------- Админ-список каналов с выбором категории ----------
 async def get_admin_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
     if not cats:
@@ -168,7 +162,6 @@ async def get_admin_categories_keyboard(get_all_categories):
                 callback_data=f"admin_cat_{cats[i+1]['id']}"
             ))
         rows.append(row)
-    # Кнопки "Все каналы" и "Без категории"
     rows.append([
         InlineKeyboardButton(text="🔍 Все каналы", callback_data="admin_cat_all"),
         InlineKeyboardButton(text="🚫 Без категории", callback_data="admin_cat_none")
