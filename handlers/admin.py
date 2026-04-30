@@ -5,6 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 
+import asyncpg   # <-- используется для прямого запроса без категорий
+
 from database import (get_all_channels, add_channel, delete_channel, update_channel,
                       toggle_channel_active,
                       get_orders, get_order_by_id, update_order_status, return_balance,
@@ -15,7 +17,7 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_all_user_ids,
                       create_seller_application, get_seller_applications,
                       approve_seller_application, reject_seller_application,
-                      get_seller_application_by_id)   # ← новая функция
+                      get_seller_application_by_id)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
@@ -23,7 +25,7 @@ from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_re
                        get_categories_admin_keyboard, get_category_actions_keyboard,
                        get_category_selection_keyboard, cancel_keyboard, get_main_keyboard,
                        get_admin_categories_keyboard, get_confirm_delete_category_keyboard)
-from config import ADMIN_IDS, ORDER_CHANNEL_ID
+from config import ADMIN_IDS, ORDER_CHANNEL_ID, DATABASE_URL
 from utils import is_admin, admin_only_message, admin_only_callback, log_admin_action
 
 router = Router()
@@ -157,6 +159,46 @@ async def admin_list_categories(cb: CallbackQuery):
     await cb.message.edit_text("Выберите категорию:", reply_markup=await get_admin_categories_keyboard(get_all_categories))
     await cb.answer()
 
+# Обработчики фильтров категорий: "все", "без категории", конкретная категория
+@router.callback_query(F.data == "admin_cat_all")
+async def admin_list_all_channels(cb: CallbackQuery):
+    if not await admin_only_callback(cb, show_alert=False):
+        return
+    ch = await get_all_channels()
+    if not ch:
+        await cb.message.edit_text("Нет каналов.", reply_markup=get_admin_keyboard())
+        await cb.answer()
+        return
+    kb, page, total = get_admin_list_keyboard(ch, 0, category_id="all")
+    await cb.message.edit_text(f"📋 Все каналы (страница 1/{total})", reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data == "admin_cat_none")
+async def admin_list_uncategorized_channels(cb: CallbackQuery):
+    if not await admin_only_callback(cb, show_alert=False):
+        return
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id, active FROM channels WHERE category_id IS NULL')
+    await conn.close()
+    if not rows:
+        await cb.message.edit_text("Нет каналов без категории.", reply_markup=get_admin_keyboard())
+        await cb.answer()
+        return
+    ch = {}
+    for r in rows:
+        ch[r['id']] = {
+            "name": r['name'],
+            "price": r['price'],
+            "subscribers": r['subscribers'],
+            "url": r['url'],
+            "description": r['description'],
+            "category_id": None,
+            "active": r['active']
+        }
+    kb, page, total = get_admin_list_keyboard(ch, 0, category_id="none")
+    await cb.message.edit_text(f"📋 Каналы без категории (страница 1/{total})", reply_markup=kb)
+    await cb.answer()
+
 @router.callback_query(F.data.startswith("admin_cat_"))
 async def admin_list_channels(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
@@ -180,6 +222,21 @@ async def admin_list_page(cb: CallbackQuery):
     cat_id = parts[4]
     if cat_id == "all":
         ch = await get_all_channels()
+    elif cat_id == "none":
+        conn = await asyncpg.connect(DATABASE_URL)
+        rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id, active FROM channels WHERE category_id IS NULL')
+        await conn.close()
+        ch = {}
+        for r in rows:
+            ch[r['id']] = {
+                "name": r['name'],
+                "price": r['price'],
+                "subscribers": r['subscribers'],
+                "url": r['url'],
+                "description": r['description'],
+                "category_id": None,
+                "active": r['active']
+            }
     else:
         ch = await get_all_channels(int(cat_id))
     if not ch:
@@ -187,7 +244,7 @@ async def admin_list_page(cb: CallbackQuery):
         await cb.answer()
         return
     kb, cur, total = get_admin_list_keyboard(ch, page, category_id=cat_id)
-    await cb.message.edit_text(f"📋 Каналы в категории (страница {cur+1}/{total})", reply_markup=kb)
+    await cb.message.edit_text(f"📋 Каналы (страница {cur+1}/{total})", reply_markup=kb)
     await cb.answer()
 
 @router.callback_query(F.data == "admin_list_back")
@@ -512,7 +569,7 @@ async def admin_stats_cb(cb: CallbackQuery):
         return
     try:
         import asyncpg
-        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        conn = await asyncpg.connect(DATABASE_URL)
         tot_ord, tot_sum = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(total),0) FROM orders")
         stat = await conn.fetch("SELECT status, COUNT(*) FROM orders GROUP BY status")
         chan_cnt = await conn.fetchval("SELECT COUNT(*) FROM channels")
@@ -649,6 +706,11 @@ async def update_subs_cmd(m: Message):
     await m.answer(f"✅ Обновлено: {updated} каналов\n❌ Не удалось: {failed}")
 
 # ---------- Быстрое добавление канала ----------
+class QuickAddStates(StatesGroup):
+    waiting_for_channel_link = State()
+    waiting_for_price = State()
+    waiting_for_category = State()   # <-- новое состояние
+
 @router.callback_query(F.data == "quick_add")
 async def quick_add_start(cb: CallbackQuery, state: FSMContext):
     if not await admin_only_callback(cb, show_alert=False):
@@ -693,14 +755,48 @@ async def quick_add_price_received(m: Message, state: FSMContext):
         await m.answer("Введите цену целым числом.")
         return
     price = int(m.text)
-    data = await state.get_data()
+    await state.update_data(quick_price=price)
+    # Показываем клавиатуру выбора категории
     cats = await get_all_categories()
-    cat_id = cats[0]['id'] if cats else None
+    kb_rows = []
+    for i in range(0, len(cats), 2):
+        row = []
+        row.append(InlineKeyboardButton(text=cats[i]['display_name'], callback_data=f"quick_cat_{cats[i]['id']}"))
+        if i+1 < len(cats):
+            row.append(InlineKeyboardButton(text=cats[i+1]['display_name'], callback_data=f"quick_cat_{cats[i+1]['id']}"))
+        kb_rows.append(row)
+    kb_rows.append([
+        InlineKeyboardButton(text="⏭ Без категории", callback_data="quick_cat_skip"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add_channel")
+    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    await m.answer("Выберите категорию:", reply_markup=kb)
+    await state.set_state(QuickAddStates.waiting_for_category)
+
+@router.callback_query(F.data.startswith("quick_cat_"), QuickAddStates.waiting_for_category)
+async def quick_add_category_chosen(cb: CallbackQuery, state: FSMContext):
+    if not await admin_only_callback(cb):
+        return
+    cat_id = int(cb.data.split("_")[2])
+    data = await state.get_data()
     new_id = f"channel_{int(time.time())}"
-    await add_channel(new_id, data['quick_name'], price, data['quick_subs'], data['quick_url'], "", cat_id)
-    log_admin_action(m.from_user.id, f"quick-added channel {new_id}")
-    await m.answer(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_keyboard())
+    await add_channel(new_id, data['quick_name'], data['quick_price'], data['quick_subs'], data['quick_url'], "", cat_id)
+    log_admin_action(cb.from_user.id, f"quick-added channel {new_id}")
+    await cb.message.edit_text(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_keyboard())
     await state.clear()
+    await cb.answer()
+
+@router.callback_query(F.data == "quick_cat_skip", QuickAddStates.waiting_for_category)
+async def quick_add_skip_category(cb: CallbackQuery, state: FSMContext):
+    if not await admin_only_callback(cb):
+        return
+    data = await state.get_data()
+    new_id = f"channel_{int(time.time())}"
+    await add_channel(new_id, data['quick_name'], data['quick_price'], data['quick_subs'], data['quick_url'], "", None)
+    log_admin_action(cb.from_user.id, f"quick-added channel {new_id} (no category)")
+    await cb.message.edit_text(f"✅ Канал {data['quick_name']} добавлен (без категории)!", reply_markup=get_admin_keyboard())
+    await state.clear()
+    await cb.answer()
 
 # ---------- Массовое добавление каналов ----------
 @router.callback_query(F.data == "bulk_add")
@@ -710,7 +806,7 @@ async def bulk_add_start(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         "📥 Отправьте JSON-массив с данными каналов.\n"
         "Формат: [{\"name\": \"...\", \"price\": ..., \"subscribers\": ..., \"url\": \"...\", \"description\": \"...\", \"category\": \"id\"}, ...]\n"
-        "Поля description и category необязательны.",
+        "Поля description и category необязательны. Если category отсутствует — канал будет без категории.",
         reply_markup=cancel_keyboard()
     )
     await state.set_state(MassAddStates.waiting_for_bulk_json)
@@ -733,7 +829,7 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
                 subs = int(item.get('subscribers', 0))
                 url = item['url']
                 desc = item.get('description', '')
-                cat_id = item.get('category')
+                cat_id = item.get('category')   # может быть None
                 new_id = f"channel_{int(time.time())}_{idx}"
                 await add_channel(new_id, name, price, subs, url, desc, cat_id)
                 added += 1
@@ -755,6 +851,7 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
 @router.callback_query(F.data == "cancel_add_channel", MassAddStates.waiting_for_bulk_json)
 @router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_channel_link)
 @router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_price)
+@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_category)
 @router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_message)
 @router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_confirm)
 async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
@@ -1043,7 +1140,7 @@ async def review_seller(cb: CallbackQuery):
     if not await admin_only_callback(cb):
         return
     app_id = int(cb.data.split("_")[2])
-    app = await get_seller_application_by_id(app_id)   # <-- оптимизировано
+    app = await get_seller_application_by_id(app_id)
     if not app:
         await cb.answer("Заявка не найдена", show_alert=True)
         return
