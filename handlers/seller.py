@@ -20,7 +20,6 @@ async def seller_start(m: Message):
     """Показывает меню биржи в зависимости от статуса продавца."""
     approved_channels = await get_approved_seller_channels(m.from_user.id)
     if not approved_channels:
-        # Предложить подать заявку
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Подать заявку", callback_data="seller_apply")],
             [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
@@ -29,21 +28,17 @@ async def seller_start(m: Message):
     else:
         await m.answer("🏪 Биржа каналов\n\nВыберите действие:", reply_markup=get_seller_main_keyboard())
 
-# Точка входа через кнопку "Биржа каналов"
 @router.message(F.text == "🏪 Биржа каналов")
 async def exchange_menu(m: Message):
     await seller_start(m)
 
-# Обработчик кнопки "Назад" внутри биржи
 @router.callback_query(F.data == "seller_back")
 async def seller_back(cb: CallbackQuery):
     await seller_start(cb.message)
     await cb.answer()
 
-# ---------- Добавление канала продавцом ----------
 @router.callback_query(F.data == "seller_apply")
 async def seller_apply(cb: CallbackQuery, state: FSMContext):
-    # Выбор категории
     await cb.message.edit_text("🏷 Выберите категорию для вашего канала:", reply_markup=await get_seller_categories_keyboard(get_all_categories))
     await state.set_state(SellerStates.waiting_for_category)
     await cb.answer()
@@ -128,7 +123,6 @@ async def submit_seller_application(m: Message, state: FSMContext, description: 
         await m.answer("❌ Не удалось отправить заявку. Попробуйте позже.")
         await state.clear()
 
-# ---------- Просмотр каналов продавца ----------
 @router.callback_query(F.data == "seller_channels")
 async def seller_channels(cb: CallbackQuery):
     channels = await get_seller_channels(cb.from_user.id)
