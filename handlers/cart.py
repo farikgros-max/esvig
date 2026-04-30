@@ -14,14 +14,11 @@ from config import ADMIN_IDS, ORDER_CHANNEL_ID
 router = Router()
 
 async def get_cart(uid):
-    """Загружает корзину пользователя из БД."""
     return await load_cart_db(uid)
 
 async def save_cart(uid, cart):
-    """Сохраняет корзину пользователя в БД."""
     await save_cart_db(uid, cart)
 
-# ---------- Просмотр корзины ----------
 @router.message(F.text == "🛒 Корзина")
 async def show_cart(m: Message):
     cart = await get_cart(m.from_user.id)
@@ -31,7 +28,6 @@ async def show_cart(m: Message):
     kb = get_cart_keyboard(cart)
     await m.answer("🛒 Ваша корзина:", reply_markup=kb)
 
-# ---------- Добавление в корзину (вызывается из catalog.py) ----------
 @router.callback_query(F.data.startswith("cart_add_"))
 async def add_to_cart(cb: CallbackQuery):
     cid = cb.data.replace("cart_add_", "")
@@ -42,7 +38,6 @@ async def add_to_cart(cb: CallbackQuery):
         await cb.answer("Канал не найден или скрыт", True)
         return
     cart = await get_cart(cb.from_user.id)
-    # Проверка на дубликат
     if any(item['id'] == cid for item in cart):
         await cb.answer("Этот канал уже в корзине", False)
         return
@@ -50,7 +45,6 @@ async def add_to_cart(cb: CallbackQuery):
     await save_cart(cb.from_user.id, cart)
     await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
 
-# ---------- Удаление элемента из корзины ----------
 @router.callback_query(F.data.startswith("remove_"))
 async def remove_from_cart(cb: CallbackQuery):
     idx = int(cb.data.split("_")[1])
@@ -67,14 +61,12 @@ async def remove_from_cart(cb: CallbackQuery):
         kb = get_cart_keyboard(cart)
         await cb.message.edit_text("🛒 Ваша корзина:", reply_markup=kb)
 
-# ---------- Очистка корзины ----------
 @router.callback_query(F.data == "clear_cart")
 async def clear_cart(cb: CallbackQuery):
     await clear_cart_db(cb.from_user.id)
     await cb.message.edit_text("🗑 Корзина очищена")
     await cb.answer()
 
-# ---------- Оформление заказа ----------
 @router.callback_query(F.data == "checkout")
 async def checkout_cb(cb: CallbackQuery, state: FSMContext):
     cart = await get_cart(cb.from_user.id)
@@ -112,7 +104,6 @@ async def contact_input(m: Message, state: FSMContext):
     contact = m.text.strip()
     username = m.from_user.username or "не указан"
 
-    # Проверка лимита
     can_order = await check_daily_order_limit(m.from_user.id)
     if not can_order:
         user_info = await get_or_create_user(m.from_user.id)
@@ -122,7 +113,6 @@ async def contact_input(m: Message, state: FSMContext):
 
     balance = await get_user_balance(m.from_user.id)
     if balance < total:
-        # Создаём заказ с ожиданием оплаты
         order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='ожидает оплаты')
         await clear_cart_db(m.from_user.id)
         await m.answer(
@@ -134,7 +124,6 @@ async def contact_input(m: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Списание и создание оплаченного заказа
     order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='оплачена')
     success = await debit_balance(m.from_user.id, total, order_id, description=f"Оплата заказа #{order_id}")
     if not success:
@@ -143,10 +132,8 @@ async def contact_input(m: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Очищаем корзину
     await clear_cart_db(m.from_user.id)
 
-    # Формируем отчёт
     items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
     report = (f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n"
               f"👤 @{username}\n"
@@ -155,14 +142,12 @@ async def contact_input(m: Message, state: FSMContext):
               f"💵 Бюджет: {budget}$\n"
               f"📞 Контакт: {contact}")
 
-    # Уведомление админам
     for aid in ADMIN_IDS:
         try:
             await m.bot.send_message(aid, report)
         except:
             pass
 
-    # Уведомление в канал заказов
     if ORDER_CHANNEL_ID:
         try:
             await m.bot.send_message(ORDER_CHANNEL_ID, report)
@@ -173,7 +158,6 @@ async def contact_input(m: Message, state: FSMContext):
                    reply_markup=get_main_keyboard(m.from_user.id))
     await state.clear()
 
-# ---------- Отмена оформления ----------
 @router.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
 @router.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_budget)
 async def cancel_checkout(cb: CallbackQuery, state: FSMContext):
