@@ -1,7 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
-import requests
+import aiohttp  # <-- замена requests
 
 from database import (get_or_create_user, get_user_daily_info, get_orders_by_user,
                       get_user_balance, update_user_balance, debit_balance,
@@ -311,36 +311,37 @@ async def process_deposit_amount(m: Message, state: FSMContext):
             "expiredIn": 3600
         }
 
-    try:
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
-        data_resp = r.json()
-        if method == 'crypto':
-            if data_resp.get("ok"):
-                invoice_url = data_resp["result"]["pay_url"]
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
-                ])
-                await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
-            else:
-                await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
-        else:
-            if data_resp.get("success"):
-                invoice_url = data_resp["data"]["link"]
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
-                    [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
-                ])
-                await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
-            else:
-                error_msg = data_resp.get("message", "Неизвестная ошибка")
-                await m.answer(f"Ошибка при создании счёта: {error_msg}", reply_markup=get_profile_keyboard())
-    except requests.exceptions.ConnectionError:
-        await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
-    except Exception as e:
-        await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
-    finally:
-        await state.clear()
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload, headers=headers, timeout=10) as resp:
+                data_resp = await resp.json()
+            if method == 'crypto':
+                if data_resp.get("ok"):
+                    invoice_url = data_resp["result"]["pay_url"]
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                    ])
+                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+                else:
+                    await m.answer("Ошибка при создании счёта. Попробуйте позже.", reply_markup=get_profile_keyboard())
+            else:  # xrocket
+                if data_resp.get("success"):
+                    invoice_url = data_resp["data"]["link"]
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Перейти к оплате", url=invoice_url)],
+                        [InlineKeyboardButton(text="🔙 Назад", callback_data="deposit")]
+                    ])
+                    await m.answer(f"Счёт на {amount}$ создан. Нажмите кнопку для оплаты:", reply_markup=kb)
+                else:
+                    error_msg = data_resp.get("message", "Неизвестная ошибка")
+                    await m.answer(f"Ошибка при создании счёта: {error_msg}", reply_markup=get_profile_keyboard())
+        except aiohttp.ClientError:
+            await m.answer("❌ Платёжная система временно недоступна. Попробуйте позже или используйте другой способ.", reply_markup=get_profile_keyboard())
+        except Exception as e:
+            await m.answer(f"❌ Ошибка: {str(e)[:300]}", reply_markup=get_profile_keyboard())
+        finally:
+            await state.clear()
 
 @router.callback_query(F.data == "check_payment")
 async def check_payment_handler(cb: CallbackQuery):
