@@ -4,7 +4,8 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 
 from database import (get_user_balance, save_order, update_order_status,
-                      check_daily_order_limit, get_or_create_user, debit_balance)
+                      check_daily_order_limit, get_or_create_user, debit_balance,
+                      save_cart_db, load_cart_db, clear_cart_db)
 from states import OrderForm
 from texts import CART_EMPTY, DAILY_LIMIT, NO_FUNDS, ORDER_SUCCESS
 from keyboards import get_cart_keyboard, get_main_keyboard
@@ -12,22 +13,71 @@ from config import ADMIN_IDS, ORDER_CHANNEL_ID
 
 router = Router()
 
-user_carts = {}
+async def get_cart(uid):
+    """Загружает корзину пользователя из БД."""
+    return await load_cart_db(uid)
 
-def get_cart(uid):
-    if uid not in user_carts:
-        user_carts[uid] = []
-    return user_carts[uid]
+async def save_cart(uid, cart):
+    """Сохраняет корзину пользователя в БД."""
+    await save_cart_db(uid, cart)
 
-def save_cart(uid, cart):
-    user_carts[uid] = cart
+# ---------- Просмотр корзины ----------
+@router.message(F.text == "🛒 Корзина")
+async def show_cart(m: Message):
+    cart = await get_cart(m.from_user.id)
+    if not cart:
+        await m.answer(CART_EMPTY)
+        return
+    kb = get_cart_keyboard(cart)
+    await m.answer("🛒 Ваша корзина:", reply_markup=kb)
 
-# Корзина, очистка, подтверждение удаления и т.д. (без изменений)
-# ...
+# ---------- Добавление в корзину (вызывается из catalog.py) ----------
+@router.callback_query(F.data.startswith("cart_add_"))
+async def add_to_cart(cb: CallbackQuery):
+    cid = cb.data.replace("cart_add_", "")
+    from database import get_active_channels
+    ch = await get_active_channels()
+    info = ch.get(cid)
+    if not info:
+        await cb.answer("Канал не найден или скрыт", True)
+        return
+    cart = await get_cart(cb.from_user.id)
+    # Проверка на дубликат
+    if any(item['id'] == cid for item in cart):
+        await cb.answer("Этот канал уже в корзине", False)
+        return
+    cart.append({"id": cid, "name": info['name'], "price": info['price']})
+    await save_cart(cb.from_user.id, cart)
+    await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
 
+# ---------- Удаление элемента из корзины ----------
+@router.callback_query(F.data.startswith("remove_"))
+async def remove_from_cart(cb: CallbackQuery):
+    idx = int(cb.data.split("_")[1])
+    cart = await get_cart(cb.from_user.id)
+    if idx < 0 or idx >= len(cart):
+        await cb.answer("Элемент не найден", True)
+        return
+    removed = cart.pop(idx)
+    await save_cart(cb.from_user.id, cart)
+    await cb.answer(f"❌ {removed['name']} удалён из корзины", False)
+    if not cart:
+        await cb.message.edit_text(CART_EMPTY)
+    else:
+        kb = get_cart_keyboard(cart)
+        await cb.message.edit_text("🛒 Ваша корзина:", reply_markup=kb)
+
+# ---------- Очистка корзины ----------
+@router.callback_query(F.data == "clear_cart")
+async def clear_cart(cb: CallbackQuery):
+    await clear_cart_db(cb.from_user.id)
+    await cb.message.edit_text("🗑 Корзина очищена")
+    await cb.answer()
+
+# ---------- Оформление заказа ----------
 @router.callback_query(F.data == "checkout")
 async def checkout_cb(cb: CallbackQuery, state: FSMContext):
-    cart = get_cart(cb.from_user.id)
+    cart = await get_cart(cb.from_user.id)
     if not cart:
         await cb.message.edit_text(CART_EMPTY, reply_markup=get_main_keyboard(cb.from_user.id))
         await cb.answer()
@@ -39,13 +89,13 @@ async def checkout_cb(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 @router.message(OrderForm.waiting_for_budget)
-async def budg(m: Message, state: FSMContext):
+async def budget_input(m: Message, state: FSMContext):
     if not m.text.isdigit():
         await m.answer("Введите число")
         return
     budget = int(m.text)
     d = await state.get_data()
-    total = d.get("total",0)
+    total = d.get("total", 0)
     if budget < total:
         await m.answer(f"Бюджет ({budget}$) меньше суммы ({total}$). Введите {total}$ или больше:")
         return
@@ -54,14 +104,15 @@ async def budg(m: Message, state: FSMContext):
     await state.set_state(OrderForm.waiting_for_contact)
 
 @router.message(OrderForm.waiting_for_contact)
-async def cont(m: Message, state: FSMContext):
+async def contact_input(m: Message, state: FSMContext):
     d = await state.get_data()
-    cart = d.get("cart",[])
-    total = d.get("total",0)
-    budget = d.get("budget",0)
+    cart = d.get("cart", [])
+    total = d.get("total", 0)
+    budget = d.get("budget", 0)
     contact = m.text.strip()
     username = m.from_user.username or "не указан"
 
+    # Проверка лимита
     can_order = await check_daily_order_limit(m.from_user.id)
     if not can_order:
         user_info = await get_or_create_user(m.from_user.id)
@@ -71,9 +122,9 @@ async def cont(m: Message, state: FSMContext):
 
     balance = await get_user_balance(m.from_user.id)
     if balance < total:
-        # Грейс-период: создаём заказ, но не списываем
+        # Создаём заказ с ожиданием оплаты
         order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='ожидает оплаты')
-        user_carts[m.from_user.id] = []
+        await clear_cart_db(m.from_user.id)
         await m.answer(
             f"⚠️ Недостаточно средств. Ваш баланс: {balance}$\n"
             f"Заказ #{order_id} создан и ожидает оплаты.\n"
@@ -83,7 +134,7 @@ async def cont(m: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Обычное списание
+    # Списание и создание оплаченного заказа
     order_id = await save_order(m.from_user.id, username, cart, total, budget, contact, status='оплачена')
     success = await debit_balance(m.from_user.id, total, order_id, description=f"Оплата заказа #{order_id}")
     if not success:
@@ -92,20 +143,40 @@ async def cont(m: Message, state: FSMContext):
         await state.clear()
         return
 
+    # Очищаем корзину
+    await clear_cart_db(m.from_user.id)
+
+    # Формируем отчёт
     items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
-    report = f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n👤 @{username}\n📦 Состав:\n{items}\n💰 Сумма: {total}$\n💵 Бюджет: {budget}$\n📞 Контакт: {contact}"
+    report = (f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n"
+              f"👤 @{username}\n"
+              f"📦 Состав:\n{items}\n"
+              f"💰 Сумма: {total}$\n"
+              f"💵 Бюджет: {budget}$\n"
+              f"📞 Контакт: {contact}")
+
     # Уведомление админам
     for aid in ADMIN_IDS:
         try:
             await m.bot.send_message(aid, report)
-        except: pass
-    # Уведомление в канал, если задан ORDER_CHANNEL_ID
+        except:
+            pass
+
+    # Уведомление в канал заказов
     if ORDER_CHANNEL_ID:
         try:
             await m.bot.send_message(ORDER_CHANNEL_ID, report)
         except Exception as e:
             print(f"Не удалось отправить уведомление в канал {ORDER_CHANNEL_ID}: {e}")
-    user_carts[m.from_user.id] = []
+
     await m.answer(ORDER_SUCCESS.format(order_id=order_id, total=total),
                    reply_markup=get_main_keyboard(m.from_user.id))
     await state.clear()
+
+# ---------- Отмена оформления ----------
+@router.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_deposit_amount)
+@router.callback_query(F.data == "cancel_add_channel", OrderForm.waiting_for_budget)
+async def cancel_checkout(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("Оформление отменено", reply_markup=get_main_keyboard(cb.from_user.id))
+    await cb.answer()
