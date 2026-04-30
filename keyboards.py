@@ -153,6 +153,11 @@ async def get_admin_categories_keyboard(get_all_categories):
                 callback_data=f"admin_cat_{cats[i+1]['id']}"
             ))
         rows.append(row)
+    # Кнопки "Все каналы" и "Без категории"
+    rows.append([
+        InlineKeyboardButton(text="🔍 Все каналы", callback_data="admin_cat_all"),
+        InlineKeyboardButton(text="🚫 Без категории", callback_data="admin_cat_none")
+    ])
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
