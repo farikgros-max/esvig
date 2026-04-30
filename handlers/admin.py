@@ -1,4 +1,4 @@
-import os, asyncio, json, logging, re
+import os, asyncio, json, logging, re, time
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -14,7 +14,8 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_top_channels, get_top_buyers, get_daily_revenue, backup_database,
                       get_all_user_ids,
                       create_seller_application, get_seller_applications,
-                      approve_seller_application, reject_seller_application)
+                      approve_seller_application, reject_seller_application,
+                      get_seller_application_by_id)   # ← новая функция
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_list_keyboard, get_admin_remove_keyboard,
@@ -1042,8 +1043,7 @@ async def review_seller(cb: CallbackQuery):
     if not await admin_only_callback(cb):
         return
     app_id = int(cb.data.split("_")[2])
-    applications = await get_seller_applications('pending')
-    app = next((a for a in applications if a['id'] == app_id), None)
+    app = await get_seller_application_by_id(app_id)   # <-- оптимизировано
     if not app:
         await cb.answer("Заявка не найдена", show_alert=True)
         return
@@ -1073,12 +1073,11 @@ async def approve_seller(cb: CallbackQuery):
     if success:
         await cb.answer("Заявка одобрена!", show_alert=False)
         log_admin_action(cb.from_user.id, f"approved seller application {app_id}")
-        try:
-            applications = await get_seller_applications('approved')
-            app = next((a for a in applications if a['id'] == app_id), None)
-            if app:
+        app = await get_seller_application_by_id(app_id)
+        if app:
+            try:
                 await cb.bot.send_message(app['user_id'], f"✅ Ваша заявка на канал «{app['channel_name']}» одобрена! Теперь он появится в бирже.")
-        except: pass
+            except: pass
     else:
         await cb.answer("Не удалось одобрить заявку", show_alert=True)
     await admin_seller_applications(cb)
@@ -1088,10 +1087,12 @@ async def reject_seller(cb: CallbackQuery):
     if not await admin_only_callback(cb):
         return
     app_id = int(cb.data.split("_")[2])
+    app = await get_seller_application_by_id(app_id)
     success = await reject_seller_application(app_id)
     if success:
         await cb.answer("Заявка отклонена", show_alert=False)
         log_admin_action(cb.from_user.id, f"rejected seller application {app_id}")
+        # опционально: уведомить продавца
     else:
         await cb.answer("Не удалось отклонить заявку", show_alert=True)
     await admin_seller_applications(cb)
