@@ -86,7 +86,7 @@ async def fix_seller_channels():
         'status': 'text',
         'created_at': 'timestamp with time zone',
         'updated_at': 'timestamp with time zone',
-        'category_id': 'integer'   # ← новый столбец для категории
+        'category_id': 'integer'
     }
 
     for col, col_type in desired.items():
@@ -115,6 +115,13 @@ async def init_db():
         status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
         category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL)''')
 
+    # Таблица для корзины
+    await conn.execute('''CREATE TABLE IF NOT EXISTS carts (
+        user_id BIGINT PRIMARY KEY,
+        items JSONB NOT NULL DEFAULT '[]'::jsonb,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )''')
+
     await fix_seller_channels()
 
     try: await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
@@ -131,6 +138,23 @@ async def init_db():
         await conn.executemany('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', default_cats)
 
     await _load_channels_from_db()
+
+# ---------- КОРЗИНА В БД ----------
+async def save_cart_db(user_id: int, items: list):
+    conn = await get_connection()
+    await conn.execute('''
+        INSERT INTO carts (user_id, items, updated_at) VALUES ($1, $2::jsonb, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET items = $2::jsonb, updated_at = NOW()
+    ''', user_id, json.dumps(items))
+
+async def load_cart_db(user_id: int) -> list:
+    conn = await get_connection()
+    row = await conn.fetchrow('SELECT items FROM carts WHERE user_id = $1', user_id)
+    return json.loads(row['items']) if row and row['items'] else []
+
+async def clear_cart_db(user_id: int):
+    conn = await get_connection()
+    await conn.execute('DELETE FROM carts WHERE user_id = $1', user_id)
 
 # ---------- АВТОМАТИЗАЦИЯ ----------
 async def auto_process_orders(bot):
@@ -451,7 +475,7 @@ async def get_daily_revenue(days=7):
 async def backup_database():
     conn = await get_connection()
     backup = {}
-    for tbl in ['users', 'categories', 'channels', 'orders', 'transactions', 'seller_channels']:
+    for tbl in ['users', 'categories', 'channels', 'orders', 'transactions', 'seller_channels', 'carts']:
         rows = await conn.fetch(f'SELECT * FROM {tbl}')
         backup[tbl] = [dict(r) for r in rows]
     filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -477,6 +501,13 @@ async def get_seller_applications(status: str = 'pending') -> list:
                                FROM seller_channels WHERE status = $1 ORDER BY created_at DESC LIMIT 50''', status)
     return [dict(r) for r in rows]
 
+async def get_seller_application_by_id(application_id: int) -> dict:
+    conn = await get_connection()
+    row = await conn.fetchrow(
+        '''SELECT id, user_id, username, channel_url, channel_name, price, description, status, created_at
+           FROM seller_channels WHERE id = $1''', application_id)
+    return dict(row) if row else None
+
 async def approve_seller_application(application_id: int) -> bool:
     conn = await get_connection()
     result = await conn.execute("UPDATE seller_channels SET status = 'approved', updated_at = NOW() WHERE id = $1 AND status = 'pending'", application_id)
@@ -494,7 +525,6 @@ async def get_seller_channels(user_id: int) -> list:
     return [dict(r) for r in rows]
 
 async def get_approved_seller_channels(user_id: int) -> list:
-    """Возвращает список одобренных каналов продавца."""
     conn = await get_connection()
     rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at
                                FROM seller_channels WHERE user_id = $1 AND status = 'approved' ORDER BY created_at DESC''', user_id)
