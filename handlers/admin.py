@@ -3,6 +3,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command
 
 from database import (get_all_channels, add_channel, delete_channel, update_channel,
                       toggle_channel_active,
@@ -34,6 +35,12 @@ admin_logger.addHandler(fh)
 class AdminSupportStates(StatesGroup):
     waiting_for_broadcast_message = State()
     waiting_for_broadcast_confirm = State()
+
+# ---------- Универсальный сброс любого состояния ----------
+@router.message(Command("cancel"))
+async def cancel_any_state(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer("🚫 Действие отменено. Можете начать заново.")
 
 # ---------- Вход в админ‑панель ----------
 @router.message(F.text == "🔑 Админ‑панель")
@@ -1066,9 +1073,8 @@ async def approve_seller(cb: CallbackQuery):
     if success:
         await cb.answer("Заявка одобрена!", show_alert=False)
         log_admin_action(cb.from_user.id, f"approved seller application {app_id}")
-        # Уведомляем владельца
         try:
-            applications = await get_seller_applications('approved')  # после одобрения статус меняется, но для уведомления возьмём approved
+            applications = await get_seller_applications('approved')
             app = next((a for a in applications if a['id'] == app_id), None)
             if app:
                 await cb.bot.send_message(app['user_id'], f"✅ Ваша заявка на канал «{app['channel_name']}» одобрена! Теперь он появится в бирже.")
