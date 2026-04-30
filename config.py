@@ -23,10 +23,12 @@ MIN_DEPOSIT = 0.1
 DAILY_ORDER_LIMIT = 3
 PAID_BTN_URL = "https://t.me/esvig_bot"
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://esvig-production-4961.up.railway.app/webhook")
-DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # ID канала для обязательной подписки
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@esvig_service")
 
 # ID канала для уведомлений о новых заказах (необязательно)
-ORDER_CHANNEL_ID = os.environ.get("ORDER_CHANNEL_ID", "")  # например, "@esvig_orders"
+ORDER_CHANNEL_ID = os.environ.get("ORDER_CHANNEL_ID", "")
+
+# База данных
+DATABASE_URL = os.environ.get("DATABASE_URL")
