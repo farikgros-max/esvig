@@ -52,6 +52,13 @@ def get_seller_main_keyboard():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="seller_back")]
     ])
 
+def get_seller_channel_keyboard(channel_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"seller_edit_{channel_id}")],
+        [InlineKeyboardButton(text="📅 Мой календарь", callback_data=f"seller_calendar_{channel_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="seller_channels")]
+    ])
+
 async def get_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
     if not cats:
@@ -263,27 +270,3 @@ async def get_category_selection_keyboard(get_all_categories, callback_prefix):
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-# ---------- Клавиатуры для продавцов ----------
-def get_seller_main_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Подать заявку", callback_data="seller_apply")],
-        [InlineKeyboardButton(text="📋 Мои каналы", callback_data="seller_channels")],
-        [InlineKeyboardButton(text="🔙 На главную", callback_data="back_to_main_menu")]
-    ])
-
-def get_seller_channel_keyboard(channel_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"seller_edit_{channel_id}")],
-        [InlineKeyboardButton(text="📅 Мой календарь", callback_data=f"seller_calendar_{channel_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="seller_channels")]
-    ])
-
-def get_seller_calendar_keyboard(channel_id: int, current_month: int, current_year: int):
-    # Стрелки для переключения месяцев будут в обработчике, здесь только статика
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️", callback_data=f"seller_cal_prev_{channel_id}_{current_month}_{current_year}"),
-         InlineKeyboardButton(text=f"{current_month}/{current_year}", callback_data="ignore"),
-         InlineKeyboardButton(text="▶️", callback_data=f"seller_cal_next_{channel_id}_{current_month}_{current_year}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"seller_channel_{channel_id}")]
-    ])
