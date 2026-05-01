@@ -7,6 +7,7 @@ import logging
 from database import (create_seller_application, get_seller_channels,
                       get_approved_seller_channels, get_all_categories)
 from keyboards import get_seller_categories_keyboard, get_seller_main_keyboard, get_main_keyboard, cancel_keyboard
+from config import ADMIN_IDS
 
 router = Router()
 
@@ -32,9 +33,11 @@ async def seller_start(m: Message):
 async def exchange_menu(m: Message):
     await seller_start(m)
 
+# Кнопка «Назад» теперь возвращает в главное меню, а не в биржу
 @router.callback_query(F.data == "seller_back")
 async def seller_back(cb: CallbackQuery):
-    await seller_start(cb.message)
+    from handlers.start import start  # импорт функции главного меню
+    await start(cb.message)
     await cb.answer()
 
 @router.callback_query(F.data == "seller_apply")
@@ -101,7 +104,7 @@ async def submit_seller_application(m: Message, state: FSMContext, description: 
         data = await state.get_data()
         channel_url = data['channel_url']
         price = data['price']
-        category_id = data.get('category_id')
+        category_id = data.get('category_id')   # берём сохранённую категорию
         username = m.from_user.username or "нет username"
 
         channel_name = channel_url
