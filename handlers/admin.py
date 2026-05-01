@@ -17,7 +17,8 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_all_user_ids,
                       create_seller_application, get_seller_applications,
                       approve_seller_application, reject_seller_application,
-                      get_seller_application_by_id)
+                      get_seller_application_by_id,
+                      _load_channels_from_db)   # <-- импорт функции обновления кеша
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_channels_menu_keyboard,
@@ -168,6 +169,7 @@ async def exec_delete_category(cb: CallbackQuery):
     cat_id = int(cb.data.split("_")[-1])
     await delete_category(cat_id)
     log_admin_action(cb.from_user.id, f"deleted category {cat_id}")
+    await _load_channels_from_db()   # обновляем кеш
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
@@ -268,7 +270,7 @@ async def admin_list_page(cb: CallbackQuery):
 
 @router.callback_query(F.data == "admin_list_back")
 async def admin_list_back(cb: CallbackQuery):
-    await admin_channels_menu(cb)
+    await admin_channels_menu(cb)   # возврат в меню каналов
 
 # ---------- Просмотр канала ----------
 @router.callback_query(F.data.startswith("admin_view_"))
@@ -310,6 +312,7 @@ async def toggle_active_cb(cb: CallbackQuery):
     cid = cb.data.replace("toggle_active_", "")
     new_state = await toggle_channel_active(cid)
     log_admin_action(cb.from_user.id, f"toggled channel {cid} active={new_state}")
+    await _load_channels_from_db()
     await cb.answer(f"Канал теперь {'активен' if new_state else 'скрыт'}", show_alert=False)
     await adm_view_chan(cb)
 
@@ -357,13 +360,18 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
 async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
     if not await admin_only_callback(cb, show_alert=False):
         return
+    # Правильно разбираем callback: edit_chan_cat_{cid}_{cat_id}
     parts = cb.data.split("_")
+    if len(parts) < 5:
+        await cb.answer("Ошибка данных", True)
+        return
     cid = parts[3]
     cat_id = int(parts[4])
     await update_channel(cid, category_id=cat_id)
     log_admin_action(cb.from_user.id, f"updated channel {cid} category to {cat_id}")
+    await _load_channels_from_db()   # обновляем кеш
     await cb.answer("Категория обновлена", False)
-    await adm_view_chan(cb)
+    await admin_list_back(cb)      # возвращаемся в список каналов
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_name)
@@ -373,6 +381,7 @@ async def e_name(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], name=m.text)
     log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} name")
+    await _load_channels_from_db()
     await m.answer(f"✅ Название изменено на {m.text}")
     await state.clear()
 
@@ -385,6 +394,7 @@ async def e_price(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], price=int(m.text))
     log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} price")
+    await _load_channels_from_db()
     await m.answer(f"✅ Цена изменена на {m.text}$")
     await state.clear()
 
@@ -397,6 +407,7 @@ async def e_subs(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], subs=int(m.text))
     log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} subscribers")
+    await _load_channels_from_db()
     await m.answer(f"✅ Количество подписчиков изменено на {m.text}")
     await state.clear()
 
@@ -411,6 +422,7 @@ async def e_url(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], url=url)
     log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} url")
+    await _load_channels_from_db()
     await m.answer(f"✅ Ссылка изменена на {url}")
     await state.clear()
 
@@ -421,6 +433,7 @@ async def e_desc(m: Message, state: FSMContext):
     d = await state.get_data()
     await update_channel(d['ch_id'], desc=m.text)
     log_admin_action(m.from_user.id, f"updated channel {d['ch_id']} description")
+    await _load_channels_from_db()
     await m.answer("✅ Описание изменено")
     await state.clear()
 
@@ -447,6 +460,7 @@ async def adm_del(cb: CallbackQuery):
         name = ch[cid]['name']
         await delete_channel(cid)
         log_admin_action(cb.from_user.id, f"deleted channel {cid} ({name})")
+        await _load_channels_from_db()
         await cb.answer(f"✅ Канал {name} удалён", False)
         new_ch = await get_all_channels()
         if not new_ch:
@@ -527,6 +541,7 @@ async def a_desc(m: Message, state: FSMContext):
     cat_id = data['category_id']
     await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
     log_admin_action(m.from_user.id, f"added channel {new_id} ({data['name']})")
+    await _load_channels_from_db()   # обновляем кеш
     cat = await get_category_by_id(cat_id)
     cat_name = cat['display_name'] if cat else ""
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_channels_menu_keyboard())
@@ -718,6 +733,7 @@ async def update_subs_cmd(m: Message):
             print(f"Failed to update {url}: {e}")
             failed += 1
         await asyncio.sleep(0.5)
+    await _load_channels_from_db()
     await m.answer(f"✅ Обновлено: {updated} каналов\n❌ Не удалось: {failed}")
 
 # ---------- Быстрое добавление канала ----------
@@ -791,6 +807,7 @@ async def quick_add_category_chosen(cb: CallbackQuery, state: FSMContext):
     new_id = f"channel_{int(time.time())}"
     await add_channel(new_id, data['quick_name'], data['quick_price'], data['quick_subs'], data['quick_url'], "", cat_id)
     log_admin_action(cb.from_user.id, f"quick-added channel {new_id}")
+    await _load_channels_from_db()
     await cb.message.edit_text(f"✅ Канал {data['quick_name']} добавлен!", reply_markup=get_admin_channels_menu_keyboard())
     await state.clear()
     await cb.answer()
@@ -803,6 +820,7 @@ async def quick_add_skip_category(cb: CallbackQuery, state: FSMContext):
     new_id = f"channel_{int(time.time())}"
     await add_channel(new_id, data['quick_name'], data['quick_price'], data['quick_subs'], data['quick_url'], "", None)
     log_admin_action(cb.from_user.id, f"quick-added channel {new_id} (no category)")
+    await _load_channels_from_db()
     await cb.message.edit_text(f"✅ Канал {data['quick_name']} добавлен (без категории)!", reply_markup=get_admin_channels_menu_keyboard())
     await state.clear()
     await cb.answer()
@@ -848,6 +866,7 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
         result = f"✅ Добавлено каналов: {added}"
         if errors:
             result += f"\n❌ Ошибки: {', '.join(errors[:5])}"
+        await _load_channels_from_db()
         await m.answer(result, reply_markup=get_admin_channels_menu_keyboard())
         await state.clear()
     except json.JSONDecodeError:
@@ -1225,6 +1244,7 @@ async def approve_seller(cb: CallbackQuery):
             category_id=app.get('category_id')
         )
         log_admin_action(cb.from_user.id, f"added channel {new_id} from seller application {app_id}")
+        await _load_channels_from_db()
     except Exception as e:
         logging.error(f"Ошибка добавления канала из заявки {app_id}: {e}")
 
