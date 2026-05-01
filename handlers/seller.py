@@ -16,6 +16,9 @@ class SellerStates(StatesGroup):
     waiting_for_price = State()
     waiting_for_description = State()
 
+# Защита от двойного вызова: словарь, который хранит, обрабатывается ли уже сообщение от пользователя
+_pending = set()
+
 async def seller_start(m: Message):
     """Показывает меню биржи в зависимости от статуса продавца."""
     approved_channels = await get_approved_seller_channels(m.from_user.id)
@@ -28,19 +31,24 @@ async def seller_start(m: Message):
     else:
         await m.answer("🏪 Биржа каналов\n\nВыберите действие:", reply_markup=get_seller_main_keyboard())
 
-# Точка входа
 @router.message(F.text == "🏪 Биржа каналов")
 async def exchange_menu(m: Message):
-    await seller_start(m)
+    # Предотвращаем повторную обработку одного и того же сообщения
+    if m.message_id in _pending:
+        return
+    _pending.add(m.message_id)
+    try:
+        await seller_start(m)
+    finally:
+        _pending.discard(m.message_id)  # после ответа убираем
 
-# Назад в главное меню
 @router.callback_query(F.data == "seller_back")
 async def seller_back(cb: CallbackQuery):
     from handlers.start import start
     await start(cb.message)
     await cb.answer()
 
-# Отмена при заполнении заявки (callback)
+# Отмена (инлайн) на любом шаге
 @router.callback_query(F.data == "cancel_add_channel", SellerStates.waiting_for_channel_url)
 @router.callback_query(F.data == "cancel_add_channel", SellerStates.waiting_for_price)
 @router.callback_query(F.data == "cancel_add_channel", SellerStates.waiting_for_description)
