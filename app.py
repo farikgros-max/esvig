@@ -47,8 +47,7 @@ async def startup():
     from handlers.profile import router as profile_router
     from handlers.admin import router as admin_router
     from handlers.info import router as info_router
-    from handlers.referral import router as referral_router
-    from handlers.seller import router as seller_router  # новый роутер
+    from handlers.seller import router as seller_router
 
     dp_instance.include_router(start_router)
     dp_instance.include_router(catalog_router)
@@ -56,8 +55,7 @@ async def startup():
     dp_instance.include_router(profile_router)
     dp_instance.include_router(admin_router)
     dp_instance.include_router(info_router)
-    dp_instance.include_router(referral_router)
-    dp_instance.include_router(seller_router)  # подключаем продавцов
+    dp_instance.include_router(seller_router)
 
     # Middleware (сначала общий перехватчик, потом остальные)
     dp_instance.message.middleware(ErrorMiddleware())
@@ -78,10 +76,8 @@ async def startup():
 
 # ---------- Фоновая проверка здоровья и очистка логов ----------
 async def db_health_check():
-    """Проверяет соединение с БД каждые 5 минут, раз в час чистит логи."""
     last_trim = 0
     while True:
-        # Проверка БД
         try:
             conn = await get_connection()
             await asyncio.wait_for(conn.execute('SELECT 1'), timeout=5)
@@ -89,7 +85,6 @@ async def db_health_check():
             print(f"[HEALTH] Проблема с БД: {e}")
             await close_db()
 
-        # Очистка логов раз в час (3600 секунд)
         now = asyncio.get_event_loop().time()
         if now - last_trim > 3600:
             trim_admin_log()
