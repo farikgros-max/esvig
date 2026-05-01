@@ -18,7 +18,7 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       create_seller_application, get_seller_applications,
                       approve_seller_application, reject_seller_application,
                       get_seller_application_by_id,
-                      _load_channels_from_db)   # <-- импорт функции обновления кеша
+                      _load_channels_from_db)      # <-- обязательно
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_channels_menu_keyboard,
@@ -169,7 +169,7 @@ async def exec_delete_category(cb: CallbackQuery):
     cat_id = int(cb.data.split("_")[-1])
     await delete_category(cat_id)
     log_admin_action(cb.from_user.id, f"deleted category {cat_id}")
-    await _load_channels_from_db()   # обновляем кеш
+    await _load_channels_from_db()
     await cb.answer("Категория удалена", False)
     await admin_categories_menu(cb)
 
@@ -270,7 +270,7 @@ async def admin_list_page(cb: CallbackQuery):
 
 @router.callback_query(F.data == "admin_list_back")
 async def admin_list_back(cb: CallbackQuery):
-    await admin_channels_menu(cb)   # возврат в меню каналов
+    await admin_channels_menu(cb)
 
 # ---------- Просмотр канала ----------
 @router.callback_query(F.data.startswith("admin_view_"))
@@ -278,6 +278,8 @@ async def adm_view_chan(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
         return
     cid = cb.data.replace("admin_view_", "")
+    # Обновляем кеш, чтобы точно увидеть свежий канал
+    await _load_channels_from_db()
     ch = await get_all_channels()
     info = ch.get(cid)
     if not info:
@@ -322,6 +324,7 @@ async def edit_chan_menu(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
         return
     cid = cb.data.replace("edit_channel_", "")
+    await _load_channels_from_db()   # на всякий случай обновим
     ch = await get_all_channels()
     if cid not in ch:
         await cb.answer("Канал не найден", True)
@@ -338,6 +341,7 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Ошибка", True)
         return
     cid, field = parts[1], parts[2]
+    await _load_channels_from_db()
     ch = await get_all_channels()
     if cid not in ch:
         await cb.answer("Канал не найден", True)
@@ -360,7 +364,6 @@ async def edit_field(cb: CallbackQuery, state: FSMContext):
 async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
     if not await admin_only_callback(cb, show_alert=False):
         return
-    # Правильно разбираем callback: edit_chan_cat_{cid}_{cat_id}
     parts = cb.data.split("_")
     if len(parts) < 5:
         await cb.answer("Ошибка данных", True)
@@ -369,9 +372,9 @@ async def edit_channel_category_selected(cb: CallbackQuery, state: FSMContext):
     cat_id = int(parts[4])
     await update_channel(cid, category_id=cat_id)
     log_admin_action(cb.from_user.id, f"updated channel {cid} category to {cat_id}")
-    await _load_channels_from_db()   # обновляем кеш
+    await _load_channels_from_db()
     await cb.answer("Категория обновлена", False)
-    await admin_list_back(cb)      # возвращаемся в список каналов
+    await admin_list_back(cb)
     await state.clear()
 
 @router.message(EditChannelStates.waiting_for_name)
@@ -541,7 +544,7 @@ async def a_desc(m: Message, state: FSMContext):
     cat_id = data['category_id']
     await add_channel(new_id, data['name'], data['price'], data['subscribers'], data['url'], data['description'], cat_id)
     log_admin_action(m.from_user.id, f"added channel {new_id} ({data['name']})")
-    await _load_channels_from_db()   # обновляем кеш
+    await _load_channels_from_db()
     cat = await get_category_by_id(cat_id)
     cat_name = cat['display_name'] if cat else ""
     await m.answer(f"✅ Канал {data['name']} добавлен в категорию {cat_name}!", reply_markup=get_admin_channels_menu_keyboard())
@@ -1231,7 +1234,7 @@ async def approve_seller(cb: CallbackQuery):
     except Exception as e:
         logging.warning(f"Не удалось получить подписчиков для {app['channel_url']}: {e}")
 
-    # Добавляем канал в общий каталог
+    # Добавляем канал в общий каталог с сохранением категории из заявки
     try:
         new_id = f"channel_{int(time.time())}"
         await add_channel(
@@ -1241,9 +1244,10 @@ async def approve_seller(cb: CallbackQuery):
             subscribers=subscribers,
             url=app['channel_url'],
             desc=app.get('description', ''),
-            category_id=app.get('category_id')
+            category_id=app.get('category_id')   # <-- ключевой момент!
         )
         log_admin_action(cb.from_user.id, f"added channel {new_id} from seller application {app_id}")
+        # Принудительно обновляем кеш, чтобы канал сразу появился в админке и у продавца
         await _load_channels_from_db()
     except Exception as e:
         logging.error(f"Ошибка добавления канала из заявки {app_id}: {e}")
