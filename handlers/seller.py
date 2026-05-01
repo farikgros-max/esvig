@@ -7,7 +7,6 @@ import logging
 from database import (create_seller_application, get_seller_channels,
                       get_approved_seller_channels, get_all_categories)
 from keyboards import get_seller_categories_keyboard, get_seller_main_keyboard, get_main_keyboard, cancel_keyboard
-from config import ADMIN_IDS
 
 router = Router()
 
@@ -29,17 +28,28 @@ async def seller_start(m: Message):
     else:
         await m.answer("🏪 Биржа каналов\n\nВыберите действие:", reply_markup=get_seller_main_keyboard())
 
+# Точка входа
 @router.message(F.text == "🏪 Биржа каналов")
 async def exchange_menu(m: Message):
     await seller_start(m)
 
-# Кнопка «Назад» теперь возвращает в главное меню, а не в биржу
+# Назад в главное меню
 @router.callback_query(F.data == "seller_back")
 async def seller_back(cb: CallbackQuery):
-    from handlers.start import start  # импорт функции главного меню
+    from handlers.start import start
     await start(cb.message)
     await cb.answer()
 
+# Отмена при заполнении заявки (callback)
+@router.callback_query(F.data == "cancel_add_channel", SellerStates.waiting_for_channel_url)
+@router.callback_query(F.data == "cancel_add_channel", SellerStates.waiting_for_price)
+@router.callback_query(F.data == "cancel_add_channel", SellerStates.waiting_for_description)
+async def cancel_seller_process(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await seller_start(cb.message)
+    await cb.answer()
+
+# ---------- Добавление канала продавцом ----------
 @router.callback_query(F.data == "seller_apply")
 async def seller_apply(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🏷 Выберите категорию для вашего канала:", reply_markup=await get_seller_categories_keyboard(get_all_categories))
@@ -56,10 +66,6 @@ async def seller_category_chosen(cb: CallbackQuery, state: FSMContext):
 
 @router.message(SellerStates.waiting_for_channel_url)
 async def seller_channel_url(m: Message, state: FSMContext):
-    if m.text == "❌ Отмена":
-        await state.clear()
-        await seller_start(m)
-        return
     url = m.text.strip()
     if not url.startswith("https://t.me/"):
         await m.answer("Ссылка должна начинаться с https://t.me/")
@@ -70,10 +76,6 @@ async def seller_channel_url(m: Message, state: FSMContext):
 
 @router.message(SellerStates.waiting_for_price)
 async def seller_price(m: Message, state: FSMContext):
-    if m.text == "❌ Отмена":
-        await state.clear()
-        await seller_start(m)
-        return
     if not m.text.isdigit():
         await m.answer("Введите цену целым числом.")
         return
@@ -93,10 +95,6 @@ async def skip_description(cb: CallbackQuery, state: FSMContext):
 
 @router.message(SellerStates.waiting_for_description)
 async def seller_description(m: Message, state: FSMContext):
-    if m.text == "❌ Отмена":
-        await state.clear()
-        await seller_start(m)
-        return
     await submit_seller_application(m, state, m.text.strip())
 
 async def submit_seller_application(m: Message, state: FSMContext, description: str):
@@ -104,7 +102,7 @@ async def submit_seller_application(m: Message, state: FSMContext, description: 
         data = await state.get_data()
         channel_url = data['channel_url']
         price = data['price']
-        category_id = data.get('category_id')   # берём сохранённую категорию
+        category_id = data.get('category_id')
         username = m.from_user.username or "нет username"
 
         channel_name = channel_url
@@ -126,6 +124,7 @@ async def submit_seller_application(m: Message, state: FSMContext, description: 
         await m.answer("❌ Не удалось отправить заявку. Попробуйте позже.")
         await state.clear()
 
+# ---------- Просмотр каналов продавца ----------
 @router.callback_query(F.data == "seller_channels")
 async def seller_channels(cb: CallbackQuery):
     channels = await get_seller_channels(cb.from_user.id)
