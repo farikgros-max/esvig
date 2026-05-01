@@ -57,7 +57,7 @@ async def startup():
     dp_instance.include_router(info_router)
     dp_instance.include_router(seller_router)
 
-    # Middleware (сначала общий перехватчик, потом остальные)
+    # Middleware
     dp_instance.message.middleware(ErrorMiddleware())
     dp_instance.callback_query.middleware(ErrorMiddleware())
     dp_instance.message.middleware(SubscriptionMiddleware())
@@ -74,7 +74,7 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
-# ---------- Фоновая проверка здоровья и очистка логов ----------
+# ---------- Фоновая проверка здоровья ----------
 async def db_health_check():
     last_trim = 0
     while True:
@@ -84,15 +84,12 @@ async def db_health_check():
         except (asyncio.TimeoutError, Exception) as e:
             print(f"[HEALTH] Проблема с БД: {e}")
             await close_db()
-
         now = asyncio.get_event_loop().time()
         if now - last_trim > 3600:
             trim_admin_log()
             last_trim = now
-
         await asyncio.sleep(300)
 
-# Пинг-команда
 from aiogram.filters import Command
 @dp_instance.message(Command("ping"))
 async def ping(m):
@@ -103,7 +100,7 @@ async def ping(m):
     except Exception:
         await m.answer("🔴 Проблема с базой данных")
 
-# Вебхуки (без изменений)
+# Вебхуки
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
