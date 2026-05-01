@@ -4,9 +4,9 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 import os
 
-from database import get_or_create_user
+from database import get_or_create_user, get_user_by_referral_code, get_user_balance
 from texts import WELCOME_CAPTION
-from keyboards import get_main_keyboard, get_admin_keyboard
+from keyboards import get_main_keyboard
 from middlewares import is_subscribed
 from config import CHANNEL_ID, ADMIN_IDS
 
@@ -14,6 +14,21 @@ router = Router()
 
 @router.message(Command("start"))
 async def start(m: Message):
+    # --- обработка реферального кода ---
+    args = m.text.split()
+    inviter_id = None
+    if len(args) > 1:
+        ref_param = args[1]
+        if ref_param.startswith("ref_"):
+            ref_code = ref_param[4:]
+            inviter = await get_user_by_referral_code(ref_code)
+            if inviter:
+                inviter_id = inviter['user_id']
+
+    # создаём/обновляем пользователя
+    user = await get_or_create_user(m.from_user.id, m.from_user.username, inviter_id)
+
+    # --- проверка подписки ---
     if not await is_subscribed(m.bot, m.from_user.id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],
@@ -21,7 +36,8 @@ async def start(m: Message):
         ])
         await m.answer("⚠️ Чтобы пользоваться ботом, подпишитесь на наш канал.", reply_markup=kb)
         return
-    user = await get_or_create_user(m.from_user.id, m.from_user.username or "Пользователь")
+
+    # --- приветствие ---
     user_name = m.from_user.first_name or m.from_user.username or "Пользователь"
     caption = WELCOME_CAPTION.format(user_name=user_name, balance=user['balance'])
     try:
@@ -72,5 +88,3 @@ async def export_orders(m: Message):
         os.remove(filename)
     except Exception as e:
         await m.answer(f"❌ Ошибка экспорта: {e}")
-        import logging
-        logging.error(f"Export error: {e}")
