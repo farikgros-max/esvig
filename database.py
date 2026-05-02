@@ -43,7 +43,7 @@ async def _load_channels_from_db():
             conn = await get_connection()
             rows = await conn.fetch(
                 '''SELECT id, name, price, subscribers, url, description, category_id,
-                   COALESCE(active, TRUE) AS active FROM channels'''
+                   COALESCE(active, TRUE) AS active, created_at FROM channels'''
             )
             ch = {}
             for r in rows:
@@ -54,7 +54,8 @@ async def _load_channels_from_db():
                     "url": r['url'] or "",
                     "description": r['description'] or "",
                     "category_id": r['category_id'],
-                    "active": r['active']
+                    "active": r['active'],
+                    "created_at": r['created_at']
                 }
             _channels_dict = ch
             print(f"[MEM] Каналы загружены в память: {len(ch)}")
@@ -101,7 +102,14 @@ async def init_db():
     await conn.execute('''CREATE TABLE IF NOT EXISTS categories (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL)''')
     await conn.execute('''CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL,
         subscribers INTEGER NOT NULL, url TEXT NOT NULL, description TEXT DEFAULT '',
-        category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, active BOOLEAN DEFAULT TRUE)''')
+        category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW())''')
+    # Добавим created_at, если таблица уже существовала
+    try:
+        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()')
+    except Exception:
+        pass
+
     await conn.execute('''CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, user_id BIGINT, username TEXT, cart TEXT,
         total INTEGER, budget INTEGER, contact TEXT, status TEXT DEFAULT 'в обработке', created_at TIMESTAMPTZ DEFAULT NOW())''')
     await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0,
@@ -356,11 +364,11 @@ async def get_channel(channel_id):
 
 async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
     conn = await get_connection()
-    await conn.execute('''INSERT INTO channels (id, name, price, subscribers, url, description, category_id, active)
-                          VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+    await conn.execute('''INSERT INTO channels (id, name, price, subscribers, url, description, category_id, active, created_at)
+                          VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW())
                           ON CONFLICT (id) DO UPDATE SET name=$2, price=$3, subscribers=$4, url=$5, description=$6, category_id=$7''',
                        ch_id, name, price, subscribers, url, desc, category_id)
-    _channels_dict[ch_id] = {"name": name, "price": price, "subscribers": subscribers, "url": url, "description": desc or "", "category_id": category_id, "active": True}
+    _channels_dict[ch_id] = {"name": name, "price": price, "subscribers": subscribers, "url": url, "description": desc or "", "category_id": category_id, "active": True, "created_at": datetime.now()}
 
 async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category_id=None):
     conn = await get_connection()
@@ -476,16 +484,17 @@ async def get_daily_revenue(days=7):
     return [{"day": str(r['day']), "orders": r['orders'], "revenue": r['revenue']} for r in rows]
 
 # ---------- БЭКАП ----------
-async def backup_database():
+async def backup_database(path: str = None):
     conn = await get_connection()
     backup = {}
     for tbl in ['users', 'categories', 'channels', 'orders', 'transactions', 'seller_channels', 'carts']:
         rows = await conn.fetch(f'SELECT * FROM {tbl}')
         backup[tbl] = [dict(r) for r in rows]
-    filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(filename, 'w', encoding='utf-8') as f:
+    if not path:
+        path = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(path, 'w', encoding='utf-8') as f:
         json.dump(backup, f, ensure_ascii=False, indent=2, default=str)
-    return filename
+    return path
 
 async def get_all_user_ids() -> list:
     conn = await get_connection()
