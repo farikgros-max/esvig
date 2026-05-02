@@ -93,14 +93,23 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     if not channels_dict:
         return None, 0, 0
     items = list(channels_dict.items())
+
+    # Сортировка
     if sort_by == "price_asc":
-        items = sorted(items, key=lambda x: x[1]['price'])
+        items.sort(key=lambda x: x[1]['price'])
     elif sort_by == "price_desc":
-        items = sorted(items, key=lambda x: x[1]['price'], reverse=True)
+        items.sort(key=lambda x: x[1]['price'], reverse=True)
     elif sort_by == "subs_asc":
-        items = sorted(items, key=lambda x: x[1]['subscribers'])
+        items.sort(key=lambda x: x[1]['subscribers'])
     elif sort_by == "subs_desc":
-        items = sorted(items, key=lambda x: x[1]['subscribers'], reverse=True)
+        items.sort(key=lambda x: x[1]['subscribers'], reverse=True)
+    elif sort_by == "name_asc":
+        items.sort(key=lambda x: x[1]['name'].lower())
+    elif sort_by == "name_desc":
+        items.sort(key=lambda x: x[1]['name'].lower(), reverse=True)
+    elif sort_by == "new_desc":
+        # Сначала новые (по created_at)
+        items.sort(key=lambda x: x[1].get('created_at', ''), reverse=True)
 
     tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
     if page < 0: page = 0
@@ -108,22 +117,34 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     start = page * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
     btns = []
-    if len(items) > 1:
-        sort_row = [
-            InlineKeyboardButton(text="🔽 Цена", callback_data=f"sort_{category_id}_price_asc_{page}"),
-            InlineKeyboardButton(text="🔼 Цена", callback_data=f"sort_{category_id}_price_desc_{page}"),
-            InlineKeyboardButton(text="🔽 Подп.", callback_data=f"sort_{category_id}_subs_asc_{page}"),
-            InlineKeyboardButton(text="🔼 Подп.", callback_data=f"sort_{category_id}_subs_desc_{page}")
-        ]
-        btns.append(sort_row)
+
+    # Строка кнопок сортировки
+    sort_buttons = [
+        InlineKeyboardButton(text="🔽 Цена", callback_data=f"sort_{category_id}_price_asc_{page}"),
+        InlineKeyboardButton(text="🔼 Цена", callback_data=f"sort_{category_id}_price_desc_{page}"),
+        InlineKeyboardButton(text="🔽 Подп.", callback_data=f"sort_{category_id}_subs_asc_{page}"),
+        InlineKeyboardButton(text="🔼 Подп.", callback_data=f"sort_{category_id}_subs_desc_{page}")
+    ]
+    extra_sort = [
+        InlineKeyboardButton(text="🔤 А-Я", callback_data=f"sort_{category_id}_name_asc_{page}"),
+        InlineKeyboardButton(text="🔤 Я-А", callback_data=f"sort_{category_id}_name_desc_{page}"),
+        InlineKeyboardButton(text="🆕 Новые", callback_data=f"sort_{category_id}_new_desc_{page}")
+    ]
+    btns.append(sort_buttons)
+    btns.append(extra_sort)
+
+    # Каналы
     for cid, inf in items[start:end]:
         btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"channel_view_{cid}")])
+
+    # Навигация
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page}_{sort_by}"))
     if page < tot - 1:
         nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"view_catalog_page_{category_id}_{page+1}_{sort_by}"))
     if nav: btns.append(nav)
+
     btns.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_categories")])
     return InlineKeyboardMarkup(inline_keyboard=btns), page, tot
 
