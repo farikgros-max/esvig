@@ -3,6 +3,8 @@ import asyncio
 import logging
 import hashlib
 import hmac
+import shutil
+from datetime import datetime
 from aiohttp import web
 from logging.handlers import RotatingFileHandler
 
@@ -12,7 +14,7 @@ from aiogram.types import Update
 
 from config import (BOT_TOKEN, ADMIN_IDS, CRYPTO_BOT_TOKEN, XROCKET_API_KEY,
                     WEBHOOK_URL, SECRET_TOKEN, CHANNEL_ID, ORDER_CHANNEL_ID)
-from database import init_db, update_user_balance, auto_process_orders, get_connection, close_db
+from database import init_db, update_user_balance, auto_process_orders, get_connection, close_db, backup_database
 from middlewares import SubscriptionMiddleware, AntiFloodMiddleware
 from utils import trim_admin_log
 
@@ -158,6 +160,34 @@ async def xrocket_handler(request):
         print(f"XRocket webhook error: {e}")
     return web.json_response({'status': 'ok'})
 
+async def daily_backup_task(bot: Bot):
+    """Ежедневный бэкап базы данных. Хранит 7 последних копий."""
+    backup_dir = "/opt/esvig/backups"
+    os.makedirs(backup_dir, exist_ok=True)
+    while True:
+        await asyncio.sleep(86400)  # раз в сутки
+        try:
+            filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filepath = os.path.join(backup_dir, filename)
+            await backup_database(filepath)
+            print(f"[BACKUP] Создан бэкап: {filepath}")
+            for aid in ADMIN_IDS:
+                try:
+                    await bot.send_message(aid, f"📦 Ежедневный бэкап базы данных создан ({filename})")
+                except:
+                    pass
+            # Удаляем старые бэкапы (оставляем 7 последних)
+            files = sorted(
+                [f for f in os.listdir(backup_dir) if f.endswith('.json')],
+                key=lambda x: os.path.getmtime(os.path.join(backup_dir, x))
+            )
+            while len(files) > 7:
+                old_file = files.pop(0)
+                os.remove(os.path.join(backup_dir, old_file))
+                print(f"[BACKUP] Удалён старый бэкап: {old_file}")
+        except Exception as e:
+            logging.error(f"Ошибка ежедневного бэкапа: {e}")
+
 async def main():
     await startup()
     asyncio.create_task(auto_process_orders(bot_instance))
@@ -166,6 +196,9 @@ async def main():
     # Импортируем и запускаем ежедневное обновление подписчиков
     from handlers.admin import daily_subscriber_update
     asyncio.create_task(daily_subscriber_update(bot_instance))
+
+    # Запуск ежедневного бэкапа
+    asyncio.create_task(daily_backup_task(bot_instance))
 
     aio_app = web.Application()
     aio_app.router.add_post('/cryptobot', cryptobot_handler)
