@@ -3,10 +3,9 @@ import asyncio
 import logging
 import hashlib
 import hmac
-import shutil
-from datetime import datetime
 from aiohttp import web
 from logging.handlers import RotatingFileHandler
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.fsm.storage.memory import MemoryStorage
