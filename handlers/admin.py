@@ -931,6 +931,8 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
 @router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_category)
 @router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_message)
 @router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_confirm)
+@router.callback_query(F.data == "cancel_add_channel", state="edit_seller_price")
+@router.callback_query(F.data == "cancel_add_channel", state="edit_seller_desc")
 async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
