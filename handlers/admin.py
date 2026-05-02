@@ -18,7 +18,7 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       create_seller_application, get_seller_applications,
                       approve_seller_application, reject_seller_application,
                       get_seller_application_by_id,
-                      _load_channels_from_db)      # <-- обязательно
+                      _load_channels_from_db)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
 from keyboards import (get_admin_keyboard, get_admin_channels_menu_keyboard,
@@ -278,7 +278,6 @@ async def adm_view_chan(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
         return
     cid = cb.data.replace("admin_view_", "")
-    # Обновляем кеш, чтобы точно увидеть свежий канал
     await _load_channels_from_db()
     ch = await get_all_channels()
     info = ch.get(cid)
@@ -324,7 +323,7 @@ async def edit_chan_menu(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
         return
     cid = cb.data.replace("edit_channel_", "")
-    await _load_channels_from_db()   # на всякий случай обновим
+    await _load_channels_from_db()
     ch = await get_all_channels()
     if cid not in ch:
         await cb.answer("Канал не найден", True)
@@ -551,6 +550,14 @@ async def a_desc(m: Message, state: FSMContext):
     await state.clear()
 
 # ========== ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ ==========
+
+# ---------- Команда принудительного обновления кеша ----------
+@router.message(F.from_user.id.in_(ADMIN_IDS), Command("reload_cache"))
+async def reload_cache_cmd(m: Message):
+    if not await admin_only_message(m):
+        return
+    await _load_channels_from_db()
+    await m.answer("✅ Кеш каналов обновлён.")
 
 # ---------- Просмотр логов ----------
 @router.message(F.from_user.id.in_(ADMIN_IDS), F.text == "/logs")
@@ -1234,7 +1241,7 @@ async def approve_seller(cb: CallbackQuery):
     except Exception as e:
         logging.warning(f"Не удалось получить подписчиков для {app['channel_url']}: {e}")
 
-    # Добавляем канал в общий каталог с сохранением категории из заявки
+    # Добавляем канал в общий каталог
     try:
         new_id = f"channel_{int(time.time())}"
         await add_channel(
@@ -1244,10 +1251,9 @@ async def approve_seller(cb: CallbackQuery):
             subscribers=subscribers,
             url=app['channel_url'],
             desc=app.get('description', ''),
-            category_id=app.get('category_id')   # <-- ключевой момент!
+            category_id=app.get('category_id')
         )
         log_admin_action(cb.from_user.id, f"added channel {new_id} from seller application {app_id}")
-        # Принудительно обновляем кеш, чтобы канал сразу появился в админке и у продавца
         await _load_channels_from_db()
     except Exception as e:
         logging.error(f"Ошибка добавления канала из заявки {app_id}: {e}")
