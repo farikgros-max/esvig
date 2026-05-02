@@ -74,7 +74,7 @@ async def startup():
         pass
     print("Бот готов (Long Polling)")
 
-# ---------- Фоновая проверка здоровья ----------
+# ---------- Фоновая проверка здоровья и очистка логов ----------
 async def db_health_check():
     last_trim = 0
     while True:
@@ -84,12 +84,15 @@ async def db_health_check():
         except (asyncio.TimeoutError, Exception) as e:
             print(f"[HEALTH] Проблема с БД: {e}")
             await close_db()
+
         now = asyncio.get_event_loop().time()
         if now - last_trim > 3600:
             trim_admin_log()
             last_trim = now
+
         await asyncio.sleep(300)
 
+# Пинг-команда
 from aiogram.filters import Command
 @dp_instance.message(Command("ping"))
 async def ping(m):
@@ -100,7 +103,7 @@ async def ping(m):
     except Exception:
         await m.answer("🔴 Проблема с базой данных")
 
-# Вебхуки
+# Вебхуки (без изменений)
 async def cryptobot_handler(request):
     if not CRYPTO_BOT_TOKEN:
         return web.json_response({'status': 'error'}, status=403)
@@ -159,6 +162,11 @@ async def main():
     await startup()
     asyncio.create_task(auto_process_orders(bot_instance))
     asyncio.create_task(db_health_check())
+
+    # Импортируем и запускаем ежедневное обновление подписчиков
+    from handlers.admin import daily_subscriber_update
+    asyncio.create_task(daily_subscriber_update(bot_instance))
+
     aio_app = web.Application()
     aio_app.router.add_post('/cryptobot', cryptobot_handler)
     aio_app.router.add_post('/xrocket', xrocket_handler)
