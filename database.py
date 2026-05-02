@@ -115,7 +115,6 @@ async def init_db():
         status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
         category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL)''')
 
-    # Таблица для корзины
     await conn.execute('''CREATE TABLE IF NOT EXISTS carts (
         user_id BIGINT PRIMARY KEY,
         items JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -131,11 +130,20 @@ async def init_db():
     try: await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
     except: pass
 
-    exists = await conn.fetchval('SELECT COUNT(*) FROM categories')
-    if exists == 0:
-        default_cats = [('news', 'Новостные'), ('trading', 'Торговые'), ('analytics', 'Аналитика'),
-                        ('nft', 'NFT'), ('memes', 'Мемкоины'), ('defi', 'DeFi')]
-        await conn.executemany('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', default_cats)
+    # Гарантируем 6 дефолтных категорий
+    default_cats = [
+        ('news', 'Новостные'),
+        ('trading', 'Торговые'),
+        ('analytics', 'Аналитика'),
+        ('nft', 'NFT'),
+        ('memes', 'Мемкоины'),
+        ('defi', 'DeFi')
+    ]
+    for name, display_name in default_cats:
+        await conn.execute(
+            'INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
+            name, display_name
+        )
 
     await _load_channels_from_db()
 
@@ -311,10 +319,6 @@ async def get_user_daily_info(user_id: int):
 async def get_all_categories():
     conn = await get_connection()
     rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
-    if not rows:
-        await conn.executemany('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
-                               [('news', 'Новостные'), ('trading', 'Торговые'), ('analytics', 'Аналитика'), ('nft', 'NFT'), ('memes', 'Мемкоины'), ('defi', 'DeFi')])
-        rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
     return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
 
 async def add_category(name, display_name):
@@ -507,6 +511,13 @@ async def get_seller_application_by_id(application_id: int) -> dict:
         '''SELECT id, user_id, username, channel_url, channel_name, price, description, status, created_at
            FROM seller_channels WHERE id = $1''', application_id)
     return dict(row) if row else None
+
+async def update_seller_application(app_id: int, price: int = None, description: str = None):
+    conn = await get_connection()
+    if price is not None:
+        await conn.execute("UPDATE seller_channels SET price = $1, updated_at = NOW() WHERE id = $2", price, app_id)
+    if description is not None:
+        await conn.execute("UPDATE seller_channels SET description = $1, updated_at = NOW() WHERE id = $2", description, app_id)
 
 async def approve_seller_application(application_id: int) -> bool:
     conn = await get_connection()
