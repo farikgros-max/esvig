@@ -17,7 +17,7 @@ from database import (get_all_channels, add_channel, delete_channel, update_chan
                       get_all_user_ids,
                       create_seller_application, get_seller_applications,
                       approve_seller_application, reject_seller_application,
-                      get_seller_application_by_id,
+                      get_seller_application_by_id, update_seller_application,
                       _load_channels_from_db)
 from states import (AddChannelStates, EditChannelStates, AddCategoryStates,
                     AdminBalanceStates, MassAddStates, QuickAddStates)
@@ -46,6 +46,30 @@ class QuickAddStates(StatesGroup):
     waiting_for_channel_link = State()
     waiting_for_price = State()
     waiting_for_category = State()
+
+# ---------- Фоновая задача обновления подписчиков раз в сутки ----------
+async def daily_subscriber_update(bot):
+    while True:
+        await asyncio.sleep(86400)  # 24 часа
+        try:
+            channels = await get_all_channels()
+            for cid, info in channels.items():
+                url = info.get('url', '')
+                match = re.match(r'(?:https?://)?t(?:elegram)?\.me/(?:joinchat/)?([a-zA-Z0-9_]+)', url)
+                if not match:
+                    continue
+                username = match.group(1)
+                try:
+                    chat = await bot.get_chat(f"@{username}" if not username.startswith("@") else username)
+                    new_subs = await bot.get_chat_member_count(chat.id)
+                    await update_channel(cid, subs=new_subs)
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    print(f"Auto update failed for {url}: {e}")
+            await _load_channels_from_db()
+            print("Daily subscriber update completed.")
+        except Exception as e:
+            print(f"Daily subscriber update error: {e}")
 
 # ---------- Универсальный сброс любого состояния ----------
 @router.message(Command("cancel"))
@@ -439,7 +463,7 @@ async def e_desc(m: Message, state: FSMContext):
     await m.answer("✅ Описание изменено")
     await state.clear()
 
-# ---------- Удаление канала ----------
+# ---------- Удаление канала (с подтверждением) ----------
 @router.callback_query(F.data == "admin_remove")
 async def adm_rem_menu(cb: CallbackQuery):
     if not await admin_only_callback(cb, show_alert=False):
@@ -459,16 +483,31 @@ async def adm_del(cb: CallbackQuery):
     cid = cb.data.replace("admin_del_", "")
     ch = await get_all_channels()
     if cid in ch:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_del_{cid}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_remove")]
+        ])
+        await cb.message.edit_text(
+            f"⚠️ Вы уверены, что хотите удалить канал «{ch[cid]['name']}»?",
+            reply_markup=kb
+        )
+        await cb.answer()
+    else:
+        await cb.answer("Канал не найден", True)
+
+@router.callback_query(F.data.startswith("confirm_del_"))
+async def confirm_delete_channel(cb: CallbackQuery):
+    if not await admin_only_callback(cb, show_alert=False):
+        return
+    cid = cb.data.replace("confirm_del_", "")
+    ch = await get_all_channels()
+    if cid in ch:
         name = ch[cid]['name']
         await delete_channel(cid)
         log_admin_action(cb.from_user.id, f"deleted channel {cid} ({name})")
         await _load_channels_from_db()
         await cb.answer(f"✅ Канал {name} удалён", False)
-        new_ch = await get_all_channels()
-        if not new_ch:
-            await cb.message.edit_text("Все каналы удалены", reply_markup=get_admin_channels_menu_keyboard())
-        else:
-            await cb.message.edit_text("❌ Выберите канал для удаления:", reply_markup=get_admin_remove_keyboard(new_ch))
+        await cb.message.edit_text("Канал удалён.", reply_markup=get_admin_channels_menu_keyboard())
     else:
         await cb.answer("Канал не найден", True)
 
@@ -1152,7 +1191,7 @@ async def cancel_broadcast_inline(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text("Рассылка отменена.", reply_markup=get_admin_keyboard())
     await cb.answer()
 
-# ========== ЗАЯВКИ ПРОДАВЦОВ ==========
+# ========== ЗАЯВКИ ПРОДАВЦОВ (пагинация, уведомления, редактирование) ==========
 @router.callback_query(F.data == "admin_seller_applications")
 async def admin_seller_applications(cb: CallbackQuery):
     if not await admin_only_callback(cb):
@@ -1162,12 +1201,62 @@ async def admin_seller_applications(cb: CallbackQuery):
         await cb.message.edit_text("Нет новых заявок от продавцов.", reply_markup=get_admin_orders_menu_keyboard())
         await cb.answer()
         return
-    text = "📋 Заявки от продавцов:\n\n"
-    for app in applications[:10]:
+    page = 0
+    per_page = 5
+    total_pages = (len(applications) + per_page - 1) // per_page
+    start = page * per_page
+    end = start + per_page
+    page_apps = applications[start:end]
+
+    text = f"📋 Заявки от продавцов (страница {page+1}/{total_pages}):\n\n"
+    for app in page_apps:
         text += f"#{app['id']} | @{app['username']} | {app['channel_name']} | {app['price']}$\n"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📄 Заявка #{app['id']}", callback_data=f"review_seller_{app['id']}")] for app in applications[:10]
-    ] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_orders")]])
+
+    kb_rows = []
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"seller_app_page_{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"seller_app_page_{page+1}"))
+    if nav_buttons:
+        kb_rows.append(nav_buttons)
+
+    for app in page_apps:
+        kb_rows.append([InlineKeyboardButton(text=f"📄 Заявка #{app['id']}", callback_data=f"review_seller_{app['id']}")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_orders")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    await cb.message.edit_text(text, reply_markup=kb)
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("seller_app_page_"))
+async def seller_app_page(cb: CallbackQuery):
+    if not await admin_only_callback(cb):
+        return
+    page = int(cb.data.split("_")[-1])
+    applications = await get_seller_applications('pending')
+    per_page = 5
+    total_pages = (len(applications) + per_page - 1) // per_page
+    start = page * per_page
+    end = start + per_page
+    page_apps = applications[start:end]
+
+    text = f"📋 Заявки от продавцов (страница {page+1}/{total_pages}):\n\n"
+    for app in page_apps:
+        text += f"#{app['id']} | @{app['username']} | {app['channel_name']} | {app['price']}$\n"
+
+    kb_rows = []
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"seller_app_page_{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"seller_app_page_{page+1}"))
+    if nav_buttons:
+        kb_rows.append(nav_buttons)
+
+    for app in page_apps:
+        kb_rows.append([InlineKeyboardButton(text=f"📄 Заявка #{app['id']}", callback_data=f"review_seller_{app['id']}")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back_to_orders")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await cb.message.edit_text(text, reply_markup=kb)
     await cb.answer()
 
@@ -1192,10 +1281,61 @@ async def review_seller(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_seller_{app_id}")],
         [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_seller_{app_id}")],
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_seller_{app_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_seller_applications")]
     ])
     await cb.message.edit_text(text, reply_markup=kb)
     await cb.answer()
+
+# --- Редактирование заявки продавца (цена/описание) ---
+@router.callback_query(F.data.startswith("edit_seller_"))
+async def edit_seller_application(cb: CallbackQuery, state: FSMContext):
+    if not await admin_only_callback(cb):
+        return
+    app_id = int(cb.data.split("_")[2])
+    app = await get_seller_application_by_id(app_id)
+    if not app:
+        await cb.answer("Заявка не найдена", show_alert=True)
+        return
+    await state.update_data(edit_seller_id=app_id)
+    await cb.message.edit_text(
+        f"Редактирование заявки #{app_id}\n"
+        "Введите новую цену (целым числом) или отправьте 'нет', чтобы оставить текущую:",
+        reply_markup=cancel_keyboard()
+    )
+    await state.set_state("edit_seller_price")
+    await cb.answer()
+
+@router.message(F.text, state="edit_seller_price")
+async def process_edit_seller_price(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
+    if m.text.lower() != "нет":
+        if not m.text.isdigit():
+            await m.answer("Введите число или 'нет'.")
+            return
+        new_price = int(m.text)
+    else:
+        new_price = None
+    await state.update_data(edit_seller_new_price=new_price)
+    await m.answer("Введите новое описание или отправьте 'нет', чтобы оставить текущее:")
+    await state.set_state("edit_seller_desc")
+
+@router.message(F.text, state="edit_seller_desc")
+async def process_edit_seller_desc(m: Message, state: FSMContext):
+    if not await admin_only_message(m):
+        return
+    new_desc = None if m.text.lower() == "нет" else m.text.strip()
+    data = await state.get_data()
+    app_id = data['edit_seller_id']
+    new_price = data.get('edit_seller_new_price')
+
+    await update_seller_application(app_id, price=new_price, description=new_desc)
+    log_admin_action(m.from_user.id, f"edited seller application {app_id}")
+    await m.answer("✅ Заявка обновлена.")
+    await state.clear()
+    # Возвращаемся к списку заявок
+    await admin_seller_applications(m)
 
 @router.callback_query(F.data.startswith("approve_seller_"))
 async def approve_seller(cb: CallbackQuery):
@@ -1265,10 +1405,20 @@ async def reject_seller(cb: CallbackQuery):
     if not await admin_only_callback(cb):
         return
     app_id = int(cb.data.split("_")[2])
+    app = await get_seller_application_by_id(app_id)
     success = await reject_seller_application(app_id)
     if success:
         await cb.answer("Заявка отклонена", show_alert=False)
         log_admin_action(cb.from_user.id, f"rejected seller application {app_id}")
+        if app:
+            try:
+                await cb.bot.send_message(
+                    app['user_id'],
+                    f"❌ Ваша заявка на канал «{app['channel_name']}» отклонена администратором.\n"
+                    "При необходимости вы можете подать новую заявку с другими параметрами."
+                )
+            except Exception as e:
+                logging.error(f"Не удалось уведомить продавца об отказе {app['user_id']}: {e}")
     else:
         await cb.answer("Не удалось отклонить заявку", show_alert=True)
     await admin_seller_applications(cb)
