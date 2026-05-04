@@ -30,20 +30,8 @@ async def show_cart(m: Message):
 
 @router.callback_query(F.data.startswith("cart_add_"))
 async def add_to_cart(cb: CallbackQuery):
-    cid = cb.data.replace("cart_add_", "")
-    from database import get_active_channels
-    ch = await get_active_channels()
-    info = ch.get(cid)
-    if not info:
-        await cb.answer("Канал не найден или скрыт", True)
-        return
-    cart = await get_cart(cb.from_user.id)
-    if any(item['id'] == cid for item in cart):
-        await cb.answer("Этот канал уже в корзине", False)
-        return
-    cart.append({"id": cid, "name": info['name'], "price": info['price']})
-    await save_cart(cb.from_user.id, cart)
-    await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
+    # Этот обработчик уже есть в catalog.py, но на всякий случай оставим
+    pass
 
 @router.callback_query(F.data.startswith("remove_"))
 async def remove_from_cart(cb: CallbackQuery):
@@ -132,9 +120,14 @@ async def contact_input(m: Message, state: FSMContext):
         await state.clear()
         return
 
+    # Букирование слотов, если в корзине указаны даты
+    for item in cart:
+        if 'date' in item:
+            await book_slot(item['id'], item['date'], m.from_user.id)
+
     await clear_cart_db(m.from_user.id)
 
-    items = "\n".join(f"• {i['name']} — {i['price']}$" for i in cart)
+    items = "\n".join(f"• {i['name']} — {i['price']}$" + (f" (дата: {i['date']})" if 'date' in i else "") for i in cart)
     report = (f"🟢 НОВАЯ ОПЛАЧЕННАЯ ЗАЯВКА #{order_id}\n"
               f"👤 @{username}\n"
               f"📦 Состав:\n{items}\n"
@@ -145,8 +138,7 @@ async def contact_input(m: Message, state: FSMContext):
     for aid in ADMIN_IDS:
         try:
             await m.bot.send_message(aid, report)
-        except:
-            pass
+        except: pass
 
     if ORDER_CHANNEL_ID:
         try:
