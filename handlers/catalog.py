@@ -1,9 +1,10 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from database import get_active_channels, get_all_categories, get_channel
+from database import get_active_channels, get_all_categories, get_channel, get_free_slots
 from keyboards import (get_categories_keyboard, get_catalog_keyboard,
-                       get_back_keyboard, get_channel_view_keyboard, get_main_keyboard)
+                       get_back_keyboard, get_channel_view_keyboard, get_main_keyboard,
+                       get_free_slots_keyboard)
 from config import ADMIN_IDS
 
 router = Router()
@@ -19,7 +20,6 @@ async def catalog_start(m: Message):
 @router.callback_query(F.data.startswith("category_select_"))
 async def select_category(cb: CallbackQuery):
     cat_id = int(cb.data.split("_")[2])
-    # Только активные каналы
     ch = await get_active_channels(cat_id)
     if not ch:
         await cb.message.edit_text("В этой категории пока нет каналов (или все скрыты).",
@@ -94,19 +94,58 @@ async def view_channel(cb: CallbackQuery):
         await cb.answer("Канал не найден или скрыт", True)
         return
     txt = f"📌 {info['name']}\n👥 Подписчиков: {info['subscribers']}\n💰 Цена: {info['price']}$\n🔗 Ссылка: {info['url']}\n📝 Описание:\n{info.get('description','Нет описания')}"
-    await cb.message.edit_text(txt, reply_markup=get_channel_view_keyboard(cid))
+
+    # Проверим свободные слоты
+    free_slots = await get_free_slots(cid)
+    kb = get_channel_view_keyboard(cid)
+    if free_slots:
+        kb.inline_keyboard.insert(0, [InlineKeyboardButton(text="📅 Выбрать дату", callback_data=f"show_slots_{cid}")])
+    await cb.message.edit_text(txt, reply_markup=kb)
     await cb.answer()
 
+@router.callback_query(F.data.startswith("show_slots_"))
+async def show_free_slots(cb: CallbackQuery):
+    cid = cb.data.replace("show_slots_", "")
+    free = await get_free_slots(cid)
+    if not free:
+        await cb.answer("Нет свободных дат", show_alert=True)
+        return
+    await cb.message.edit_text("📅 Доступные даты для размещения:", reply_markup=get_free_slots_keyboard(cid, free))
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("choose_slot_"))
+async def choose_slot(cb: CallbackQuery, state: FSMContext):
+    # ожидается формат choose_slot_{channel_id}_{date}
+    parts = cb.data.split("_")
+    channel_id = parts[2]
+    date = parts[3]
+    # Сохраняем выбранную дату в FSM, чтобы потом добавить в корзину с датой
+    await state.update_data(selected_date=date)
+    await cb.answer(f"Дата {date} выбрана. Теперь добавьте канал в корзину.", show_alert=False)
+    # Возвращаемся к просмотру канала
+    await view_channel(cb)
+
 @router.callback_query(F.data.startswith("cart_add_"))
-async def add_to_cart(cb: CallbackQuery):
+async def add_to_cart(cb: CallbackQuery, state: FSMContext):
     cid = cb.data.replace("cart_add_", "")
     ch = await get_active_channels()
     info = ch.get(cid)
     if not info:
         await cb.answer("Канал не найден или скрыт", True)
         return
+
     from handlers.cart import get_cart, save_cart
-    cart = get_cart(cb.from_user.id)
-    cart.append({"id": cid, "name": info['name'], "price": info['price']})
-    save_cart(cb.from_user.id, cart)
+    cart = await get_cart(cb.from_user.id)
+
+    # Проверяем, есть ли выбранная дата в FSM
+    data = await state.get_data()
+    selected_date = data.get("selected_date")
+    if selected_date:
+        # Добавляем элемент с датой
+        cart.append({"id": cid, "name": info['name'], "price": info['price'], "date": selected_date})
+        await state.update_data(selected_date=None)  # сброс
+    else:
+        cart.append({"id": cid, "name": info['name'], "price": info['price']})
+
+    await save_cart(cb.from_user.id, cart)
     await cb.answer(f"✅ {info['name']} добавлен в корзину!", False)
