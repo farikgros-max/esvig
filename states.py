@@ -36,14 +36,20 @@ class MassAddStates(StatesGroup):
 class QuickAddStates(StatesGroup):
     waiting_for_channel_link = State()
     waiting_for_price = State()
+    waiting_for_category = State()
 
 class WithdrawStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_method = State()
 
 class SellerStates(StatesGroup):
+    waiting_for_category = State()
     waiting_for_channel_url = State()
-    waiting_for_channel_name = State()
-    waiting_for_description = State()
     waiting_for_price = State()
-    waiting_for_calendar_dates = State()  # даты через запятую
+    waiting_for_description = State()
+
+class SellerCalendarStates(StatesGroup):
+    waiting_for_date = State()
+
+class SellerAnalyticsStates(StatesGroup):
+    waiting_for_period = State()
