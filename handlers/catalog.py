@@ -1,5 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext          # ← добавлен импорт
 
 from database import get_active_channels, get_all_categories, get_channel, get_free_slots
 from keyboards import (get_categories_keyboard, get_catalog_keyboard,
