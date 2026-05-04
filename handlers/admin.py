@@ -4,6 +4,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
+from aiogram.dispatcher.filters.state import StateFilter  # <-- добавлен импорт
 
 import asyncpg
 
@@ -112,7 +113,6 @@ async def admin_orders_menu(cb: CallbackQuery):
 @router.callback_query(F.data == "admin_back_to_orders")
 async def back_to_orders_menu(cb: CallbackQuery):
     await admin_orders_menu(cb)
-
 # ---------- Управление категориями ----------
 @router.callback_query(F.data == "admin_categories")
 async def admin_categories_menu(cb: CallbackQuery):
@@ -925,18 +925,17 @@ async def bulk_add_json_received(m: Message, state: FSMContext):
         await state.clear()
 
 # ---------- Отмена для новых состояний ----------
-@router.callback_query(F.data == "cancel_add_channel", MassAddStates.waiting_for_bulk_json)
-@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_channel_link)
-@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_price)
-@router.callback_query(F.data == "cancel_add_channel", QuickAddStates.waiting_for_category)
-@router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_message)
-@router.callback_query(F.data == "cancel_add_channel", AdminSupportStates.waiting_for_broadcast_confirm)
-@router.callback_query(F.data == "cancel_add_channel", state="edit_seller_price")
-@router.callback_query(F.data == "cancel_add_channel", state="edit_seller_desc")
-async def cancel_new_processes(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
-    await cb.answer()
+@router.callback_query(F.data == "cancel_add_channel")
+async def cancel_any_callback(cb: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state in ("edit_seller_price", "edit_seller_desc"):
+        await state.clear()
+        await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
+        await cb.answer()
+    else:
+        await state.clear()
+        await cb.message.edit_text("👑 Админ‑панель", reply_markup=get_admin_keyboard())
+        await cb.answer()
 
 # ---------- Заявки покупателей ----------
 @router.callback_query(F.data == "admin_orders")
