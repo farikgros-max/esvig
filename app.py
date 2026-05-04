@@ -24,7 +24,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s:%(message)s'
 )
 
-bot_instance = Bot(token=BOT_TOKEN, proxy="http://127.0.0.1:3128")
+bot_instance = Bot(token=BOT_TOKEN)
 dp_instance = Dispatcher(storage=MemoryStorage())
 
 # ---------- Глобальный перехватчик ошибок ----------
