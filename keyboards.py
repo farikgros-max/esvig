@@ -65,9 +65,30 @@ def get_seller_main_keyboard():
 def get_seller_channel_keyboard(channel_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"seller_edit_{channel_id}")],
-        [InlineKeyboardButton(text="📅 Мой календарь", callback_data=f"seller_calendar_{channel_id}")],
+        [InlineKeyboardButton(text="📅 Календарь", callback_data=f"seller_calendar_{channel_id}")],
+        [InlineKeyboardButton(text="📊 Аналитика", callback_data=f"seller_analytics_{channel_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="seller_channels")]
     ])
+
+def get_seller_calendar_keyboard(channel_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Отметить свободную дату", callback_data=f"seller_calendar_add_{channel_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"seller_channel_{channel_id}")]
+    ])
+
+def get_seller_analytics_keyboard(channel_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Доходы за 7 дней", callback_data=f"seller_analytics_7_{channel_id}")],
+        [InlineKeyboardButton(text="📈 Доходы за 30 дней", callback_data=f"seller_analytics_30_{channel_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"seller_channel_{channel_id}")]
+    ])
+
+def get_free_slots_keyboard(channel_id: int, free_slots: list):
+    buttons = []
+    for slot in free_slots:
+        buttons.append([InlineKeyboardButton(text=f"📅 {slot}", callback_data=f"choose_slot_{channel_id}_{slot}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"channel_view_{channel_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def get_categories_keyboard(get_all_categories):
     cats = await get_all_categories()
@@ -94,7 +115,6 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
         return None, 0, 0
     items = list(channels_dict.items())
 
-    # Сортировка
     if sort_by == "price_asc":
         items.sort(key=lambda x: x[1]['price'])
     elif sort_by == "price_desc":
@@ -108,7 +128,6 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     elif sort_by == "name_desc":
         items.sort(key=lambda x: x[1]['name'].lower(), reverse=True)
     elif sort_by == "new_desc":
-        # Сначала новые (по created_at)
         items.sort(key=lambda x: x[1].get('created_at', ''), reverse=True)
 
     tot = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
@@ -118,7 +137,6 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     end = start + ITEMS_PER_PAGE
     btns = []
 
-    # Строка кнопок сортировки
     sort_buttons = [
         InlineKeyboardButton(text="🔽 Цена", callback_data=f"sort_{category_id}_price_asc_{page}"),
         InlineKeyboardButton(text="🔼 Цена", callback_data=f"sort_{category_id}_price_desc_{page}"),
@@ -133,11 +151,9 @@ def get_catalog_keyboard(channels_dict, category_id, page=0, sort_by="default"):
     btns.append(sort_buttons)
     btns.append(extra_sort)
 
-    # Каналы
     for cid, inf in items[start:end]:
         btns.append([InlineKeyboardButton(text=f"{inf['name']} ({inf['subscribers']} подп., {inf['price']}$)", callback_data=f"channel_view_{cid}")])
 
-    # Навигация
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"view_catalog_page_{category_id}_{page}_{sort_by}"))
