@@ -1,19 +1,15 @@
-import asyncpg
-import json
-import os
-import asyncio
+import asyncpg, json, os, asyncio
 from datetime import datetime, timedelta
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 _conn: asyncpg.Connection = None
 _lock = asyncio.Lock()
-
 _channels_dict = {}
 
-REFERRAL_LEVELS = {1: 4, 2: 2, 3: 1}
+REFERRAL_LEVELS = {1:4, 2:2, 3:1}
 
-async def get_connection() -> asyncpg.Connection:
+async def get_connection():
     global _conn
     if _conn is None or _conn.is_closed():
         async with _lock:
@@ -21,10 +17,10 @@ async def get_connection() -> asyncpg.Connection:
                 for attempt in range(3):
                     try:
                         _conn = await asyncpg.connect(DATABASE_URL)
-                        print("[DB] Установлено новое подключение к БД")
+                        print("[DB] Новое подключение")
                         return _conn
                     except Exception as e:
-                        print(f"[DB] Ошибка подключения (попытка {attempt+1}): {e}")
+                        print(f"[DB] Ошибка подключения {attempt+1}: {e}")
                         await asyncio.sleep(2)
                 raise ConnectionError("Не удалось подключиться к БД после 3 попыток")
     return _conn
@@ -58,16 +54,15 @@ async def _load_channels_from_db():
                     "created_at": r['created_at']
                 }
             _channels_dict = ch
-            print(f"[MEM] Каналы загружены в память: {len(ch)}")
+            print(f"[MEM] Каналов загружено: {len(ch)}")
             return
         except Exception as e:
-            print(f"[MEM] Ошибка загрузки каналов (попытка {attempt+1}): {e}")
+            print(f"[MEM] Ошибка загрузки каналов: {e}")
             await close_db()
             await asyncio.sleep(2)
-    print("[MEM] Не удалось обновить кеш каналов, используется предыдущий")
+    print("[MEM] Не удалось обновить кеш каналов")
 
 async def fix_seller_channels():
-    """Добавляет недостающие столбцы в таблицу seller_channels, если их нет."""
     conn = await get_connection()
     try:
         columns = await conn.fetch(
@@ -76,7 +71,6 @@ async def fix_seller_channels():
         existing_cols = {r['column_name'] for r in columns}
     except Exception:
         return
-
     desired = {
         'user_id': 'bigint',
         'username': 'text',
@@ -89,7 +83,6 @@ async def fix_seller_channels():
         'updated_at': 'timestamp with time zone',
         'category_id': 'integer'
     }
-
     for col, col_type in desired.items():
         if col not in existing_cols:
             try:
@@ -104,12 +97,6 @@ async def init_db():
         subscribers INTEGER NOT NULL, url TEXT NOT NULL, description TEXT DEFAULT '',
         category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMPTZ DEFAULT NOW())''')
-    # Добавим created_at, если таблица уже существовала
-    try:
-        await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()')
-    except Exception:
-        pass
-
     await conn.execute('''CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, user_id BIGINT, username TEXT, cart TEXT,
         total INTEGER, budget INTEGER, contact TEXT, status TEXT DEFAULT 'в обработке', created_at TIMESTAMPTZ DEFAULT NOW())''')
     await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0,
@@ -122,11 +109,21 @@ async def init_db():
         username TEXT, channel_url TEXT NOT NULL, channel_name TEXT, price INTEGER DEFAULT 0, description TEXT DEFAULT '',
         status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
         category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL)''')
-
     await conn.execute('''CREATE TABLE IF NOT EXISTS carts (
         user_id BIGINT PRIMARY KEY,
         items JSONB NOT NULL DEFAULT '[]'::jsonb,
         updated_at TIMESTAMPTZ DEFAULT NOW()
+    )''')
+    # Новые таблицы для календаря
+    await conn.execute('''CREATE TABLE IF NOT EXISTS slot_bookings (
+        id SERIAL PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        seller_user_id BIGINT NOT NULL,
+        date DATE NOT NULL,
+        booked_by BIGINT,
+        status TEXT DEFAULT 'free',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(channel_id, date)
     )''')
 
     await fix_seller_channels()
@@ -137,25 +134,18 @@ async def init_db():
     except: pass
     try: await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
     except: pass
+    try: await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()')
+    except: pass
 
-    # Гарантируем 6 дефолтных категорий
-    default_cats = [
-        ('news', 'Новостные'),
-        ('trading', 'Торговые'),
-        ('analytics', 'Аналитика'),
-        ('nft', 'NFT'),
-        ('memes', 'Мемкоины'),
-        ('defi', 'DeFi')
-    ]
+    # Гарантируем 6 категорий
+    default_cats = [('news', 'Новостные'), ('trading', 'Торговые'), ('analytics', 'Аналитика'),
+                    ('nft', 'NFT'), ('memes', 'Мемкоины'), ('defi', 'DeFi')]
     for name, display_name in default_cats:
-        await conn.execute(
-            'INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
-            name, display_name
-        )
+        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', name, display_name)
 
     await _load_channels_from_db()
 
-# ---------- КОРЗИНА В БД ----------
+# ---------- КОРЗИНА ----------
 async def save_cart_db(user_id: int, items: list):
     conn = await get_connection()
     await conn.execute('''
@@ -182,7 +172,7 @@ async def auto_process_orders(bot):
                 await conn.execute("UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1", now - timedelta(hours=24))
                 await conn.execute("UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1", now - timedelta(hours=48))
         except Exception as e:
-            print(f"[AUTO] Ошибка автообработки (будет повторено): {e}")
+            print(f"[AUTO] Ошибка автообработки: {e}")
             await close_db()
         await asyncio.sleep(900)
 
@@ -293,7 +283,7 @@ async def return_balance(user_id: int, amount: int, order_id: int, description: 
         await conn.execute('UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2', amount, user_id)
         await conn.execute("INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'возврат', $2, $3, $4)", user_id, amount, order_id, description)
 
-async def get_user_balance(user_id): 
+async def get_user_balance(user_id):
     conn = await get_connection()
     return (await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id)) or 0
 
@@ -549,3 +539,50 @@ async def get_approved_seller_channels(user_id: int) -> list:
     rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at
                                FROM seller_channels WHERE user_id = $1 AND status = 'approved' ORDER BY created_at DESC''', user_id)
     return [dict(r) for r in rows]
+
+# ========== КАЛЕНДАРЬ ==========
+async def set_slot(channel_id: str, seller_user_id: int, date_str: str, status: str = "free"):
+    conn = await get_connection()
+    await conn.execute('''INSERT INTO slot_bookings (channel_id, seller_user_id, date, status)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (channel_id, date) DO UPDATE SET status = $4''',
+                        channel_id, seller_user_id, date_str, status)
+
+async def get_channel_slots(channel_id: str) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT date, status FROM slot_bookings WHERE channel_id = $1 ORDER BY date', channel_id)
+    return [{"date": str(r['date']), "status": r['status']} for r in rows]
+
+async def book_slot(channel_id: str, date_str: str, buyer_user_id: int):
+    conn = await get_connection()
+    await conn.execute('''UPDATE slot_bookings SET status = 'booked', booked_by = $3
+                        WHERE channel_id = $1 AND date = $2 AND status = 'free' ''',
+                        channel_id, date_str, buyer_user_id)
+
+async def get_free_slots(channel_id: str) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT date FROM slot_bookings WHERE channel_id = $1 AND status = $2 ORDER BY date',
+                            channel_id, 'free')
+    return [str(r['date']) for r in rows]
+
+# ========== АНАЛИТИКА ==========
+async def get_seller_channel_stats(channel_id: str, seller_user_id: int, days: int = 30):
+    conn = await get_connection()
+    rows = await conn.fetch('''
+        SELECT DATE(o.created_at) as day, COUNT(*) as orders, COALESCE(SUM(o.total),0) as revenue
+        FROM orders o
+        WHERE o.status IN ('оплачена','выполнена')
+          AND o.created_at >= CURRENT_DATE - $1::integer
+          AND o.cart::jsonb @> $2::jsonb
+        GROUP BY day ORDER BY day ASC
+    ''', days, json.dumps([{"id": channel_id}]))
+    return [{"day": str(r['day']), "orders": r['orders'], "revenue": r['revenue']} for r in rows]
+
+async def get_calendar_fill_rate(channel_id: str) -> float:
+    conn = await get_connection()
+    total = await conn.fetchval('SELECT COUNT(*) FROM slot_bookings WHERE channel_id = $1', channel_id)
+    if total == 0:
+        return 0.0
+    booked = await conn.fetchval('SELECT COUNT(*) FROM slot_bookings WHERE channel_id = $1 AND status = $2',
+                                 channel_id, 'booked')
+    return round(booked / total * 100, 1)
