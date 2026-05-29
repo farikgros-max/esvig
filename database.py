@@ -1,0 +1,693 @@
+import asyncpg, json, os, asyncio
+from datetime import datetime, timedelta, date
+
+from dotenv import load_dotenv
+
+load_dotenv()
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+PAID_ORDER_STATUSES = ('в обработке', 'оплачена')
+
+_pool = None
+_channels_dict = {}
+
+class _PoolWrapper:
+    def __init__(self, pool):
+        self._pool = pool
+
+    async def execute(self, query, *args):
+        async with self._pool.acquire() as conn:
+            return await conn.execute(query, *args)
+
+    async def fetch(self, query, *args):
+        async with self._pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+
+    async def fetchrow(self, query, *args):
+        async with self._pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+
+    async def fetchval(self, query, *args):
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(query, *args)
+
+    def transaction(self):
+        return _TransactionContext(self._pool)
+
+class _TransactionContext:
+    def __init__(self, pool):
+        self._pool = pool
+        self._conn = None
+
+    async def __aenter__(self):
+        self._conn = await self._pool.acquire()
+        self._tx = self._conn.transaction()
+        await self._tx.__aenter__()
+        return self._conn
+
+    async def __aexit__(self, *args):
+        try:
+            await self._tx.__aexit__(*args)
+        finally:
+            await self._pool.release(self._conn)
+
+async def get_connection():
+    global _pool
+    if _pool is None:
+        for attempt in range(3):
+            try:
+                _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+                print("[DB] Пул создан")
+                break
+            except Exception as e:
+                print(f"[DB] Ошибка создания пула {attempt+1}: {e}")
+                await asyncio.sleep(2)
+        else:
+            raise ConnectionError("Не удалось создать пул после 3 попыток")
+    return _PoolWrapper(_pool)
+
+async def close_db():
+    global _pool
+    if _pool:
+        try: await _pool.close()
+        except: pass
+        _pool = None
+
+async def _load_channels_from_db():
+    global _channels_dict
+    for attempt in range(3):
+        try:
+            conn = await get_connection()
+            rows = await conn.fetch(
+                '''SELECT id, name, price, subscribers, url, description, category_id,
+                   COALESCE(active, TRUE) AS active, created_at FROM channels'''
+            )
+            ch = {}
+            for r in rows:
+                ch[r['id']] = {
+                    "name": r['name'] or "Без названия",
+                    "price": r['price'] or 0,
+                    "subscribers": r['subscribers'] or 0,
+                    "url": r['url'] or "",
+                    "description": r['description'] or "",
+                    "category_id": r['category_id'],
+                    "active": r['active'],
+                    "created_at": r['created_at']
+                }
+            _channels_dict = ch
+            print(f"[MEM] Каналов загружено: {len(ch)}")
+            return
+        except Exception as e:
+            print(f"[MEM] Ошибка загрузки каналов: {e}")
+            await asyncio.sleep(2)
+    print("[MEM] Не удалось обновить кеш каналов")
+
+async def init_db():
+    conn = await get_connection()
+    await conn.execute('''CREATE TABLE IF NOT EXISTS categories (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL)''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, name TEXT NOT NULL, price INTEGER NOT NULL,
+        subscribers INTEGER NOT NULL, url TEXT NOT NULL, description TEXT DEFAULT '',
+        category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW())''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, user_id BIGINT, username TEXT, cart TEXT,
+        total INTEGER, budget INTEGER, contact TEXT, status TEXT DEFAULT 'в обработке', created_at TIMESTAMPTZ DEFAULT NOW())''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0,
+        daily_limit INTEGER DEFAULT 3, daily_orders_count INTEGER DEFAULT 0, last_order_date DATE DEFAULT CURRENT_DATE,
+        referral_code TEXT UNIQUE, inviter_id BIGINT, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS transactions (id SERIAL PRIMARY KEY, user_id BIGINT REFERENCES users(user_id),
+        type TEXT NOT NULL, amount INTEGER NOT NULL, order_id INTEGER REFERENCES orders(id), description TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW())''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS seller_channels (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL,
+        username TEXT, channel_url TEXT NOT NULL, channel_name TEXT, price INTEGER DEFAULT 0, description TEXT DEFAULT '',
+        status TEXT DEFAULT 'pending', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(),
+        category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL)''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS carts (
+        user_id BIGINT PRIMARY KEY,
+        items JSONB NOT NULL DEFAULT '[]'::jsonb,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )''')
+    await conn.execute('''CREATE TABLE IF NOT EXISTS slot_bookings (
+        id SERIAL PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        seller_user_id BIGINT NOT NULL,
+        date DATE NOT NULL,
+        booked_by BIGINT,
+        status TEXT DEFAULT 'free',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(channel_id, date)
+    )''')
+
+    try: await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE')
+    except: pass
+    try: await conn.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS inviter_id BIGINT')
+    except: pass
+    try: await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE')
+    except: pass
+    try: await conn.execute('ALTER TABLE channels ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()')
+    except: pass
+
+    default_cats = [('news', 'Новостные'), ('trading', 'Торговые'), ('analytics', 'Аналитика'),
+                    ('nft', 'NFT'), ('memes', 'Мемкоины'), ('defi', 'DeFi')]
+    for name, display_name in default_cats:
+        await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', name, display_name)
+
+    await _load_channels_from_db()
+
+# ---------- КОРЗИНА ----------
+async def save_cart_db(user_id: int, items: list):
+    conn = await get_connection()
+    await conn.execute('''
+        INSERT INTO carts (user_id, items, updated_at) VALUES ($1, $2::jsonb, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET items = $2::jsonb, updated_at = NOW()
+    ''', user_id, json.dumps(items))
+
+async def load_cart_db(user_id: int) -> list:
+    conn = await get_connection()
+    row = await conn.fetchrow('SELECT items FROM carts WHERE user_id = $1', user_id)
+    return json.loads(row['items']) if row and row['items'] else []
+
+async def clear_cart_db(user_id: int):
+    conn = await get_connection()
+    await conn.execute('DELETE FROM carts WHERE user_id = $1', user_id)
+
+# ---------- АВТОМАТИЗАЦИЯ ----------
+async def auto_process_orders(bot):
+    while True:
+        try:
+            conn = await get_connection()
+            now = datetime.now()
+            async with conn.transaction():
+                await conn.execute("UPDATE orders SET status = 'отменена' WHERE status = 'ожидает оплаты' AND created_at < $1", now - timedelta(hours=24))
+                await conn.execute("UPDATE orders SET status = 'выполнена' WHERE status = 'оплачена' AND created_at < $1", now - timedelta(hours=48))
+        except Exception as e:
+            print(f"[AUTO] Ошибка автообработки: {e}")
+        await asyncio.sleep(900)
+
+# ---------- ПОЛЬЗОВАТЕЛИ ----------
+async def get_user(user_id: int):
+    conn = await get_connection()
+    return await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+
+async def get_or_create_user(user_id: int, username: str = None, inviter_id: int = None):
+    conn = await get_connection()
+    user = await conn.fetchrow('SELECT * FROM users WHERE user_id = $1', user_id)
+    if not user:
+        code = f"REF{user_id}"
+        await conn.execute('''INSERT INTO users (user_id, username, balance, daily_limit, daily_orders_count, last_order_date, referral_code, inviter_id)
+                              VALUES ($1, $2, 0, 3, 0, CURRENT_DATE, $3, $4)''', user_id, username, code, inviter_id)
+        return {'user_id': user_id, 'username': username, 'balance': 0, 'daily_limit': 3, 'daily_orders_count': 0, 'referral_code': code, 'inviter_id': inviter_id}
+    if username and user['username'] != username:
+        await conn.execute('UPDATE users SET username = $1 WHERE user_id = $2', username, user_id)
+    referral_code = user['referral_code'] or f"REF{user_id}"
+    if not user['referral_code']:
+        await conn.execute('UPDATE users SET referral_code = $1 WHERE user_id = $2', referral_code, user_id)
+    return {'user_id': user['user_id'], 'username': user['username'], 'balance': user['balance'],
+            'daily_limit': user['daily_limit'], 'daily_orders_count': user['daily_orders_count'],
+            'referral_code': referral_code, 'inviter_id': user['inviter_id']}
+
+async def add_user(user_id: int, username: str, first_name: str, last_name: str):
+    await get_or_create_user(user_id, username)
+
+async def get_user_balance(user_id):
+    conn = await get_connection()
+    return (await conn.fetchval('SELECT balance FROM users WHERE user_id = $1', user_id)) or 0
+
+async def update_user_balance(user_id: int, amount: int, description: str = "Пополнение баланса"):
+    conn = await get_connection()
+    async with conn.transaction():
+        await conn.execute('UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2', amount, user_id)
+        await conn.execute("INSERT INTO transactions (user_id, type, amount, description) VALUES ($1, 'пополнение', $2, $3)", user_id, amount, description)
+
+async def update_subscription(user_id: int, is_subscribed: bool):
+    conn = await get_connection()
+    await conn.execute('UPDATE users SET is_subscribed = $1 WHERE user_id = $2', is_subscribed, user_id)
+
+async def get_user_by_referral_code(code: str):
+    conn = await get_connection()
+    return await conn.fetchrow('SELECT user_id FROM users WHERE referral_code = $1', code)
+
+async def update_user_referral_code(user_id: int, code: str):
+    conn = await get_connection()
+    await conn.execute('UPDATE users SET referral_code = $1 WHERE user_id = $2', code, user_id)
+
+async def get_referral_stats(user_id: int):
+    conn = await get_connection()
+    count = await conn.fetchval('SELECT COUNT(*) FROM users WHERE inviter_id = $1', user_id)
+    bonuses = await conn.fetchval("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id = $1 AND type = 'реферальный бонус'", user_id)
+    return {"invited": count or 0, "bonuses": bonuses or 0}
+
+async def get_user_daily_info(user_id: int):
+    conn = await get_connection()
+    row = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+    if not row: return 0, 0
+    today = await conn.fetchval('SELECT CURRENT_DATE')
+    used = row['daily_orders_count'] if row['last_order_date'] == today else 0
+    return row['daily_limit'], used
+
+async def get_all_users():
+    conn = await get_connection()
+    return await conn.fetch('SELECT * FROM users')
+
+async def get_all_user_ids() -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT user_id FROM users')
+    return [r['user_id'] for r in rows]
+
+async def debit_balance(user_id: int, amount: int, order_id: int = None, description: str = "Списание за заказ"):
+    conn = await get_connection()
+    async with conn.transaction():
+        cur_balance = await conn.fetchval('SELECT balance FROM users WHERE user_id = $1 FOR UPDATE', user_id)
+        if cur_balance is None or cur_balance < amount: return False
+        await conn.execute('UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE user_id = $2', amount, user_id)
+        await conn.execute("INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'списание', $2, $3, $4)", user_id, amount, order_id, description)
+        return True
+
+async def return_balance(user_id: int, amount: int, order_id: int, description: str = "Возврат за отмену заказа"):
+    conn = await get_connection()
+    async with conn.transaction():
+        await conn.execute('UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2', amount, user_id)
+        await conn.execute("INSERT INTO transactions (user_id, type, amount, order_id, description) VALUES ($1, 'возврат', $2, $3, $4)", user_id, amount, order_id, description)
+
+async def check_daily_order_limit(user_id: int) -> bool:
+    conn = await get_connection()
+    user = await conn.fetchrow('SELECT daily_limit, daily_orders_count, last_order_date FROM users WHERE user_id = $1', user_id)
+    if not user: return False
+    today = await conn.fetchval('SELECT CURRENT_DATE')
+    if user['last_order_date'] != today:
+        await conn.execute('UPDATE users SET daily_orders_count = 0, last_order_date = CURRENT_DATE WHERE user_id = $1', user_id)
+        count = 0
+    else: count = user['daily_orders_count']
+    if count >= user['daily_limit']: return False
+    return True
+
+async def increment_daily_orders(user_id: int):
+    conn = await get_connection()
+    today = await conn.fetchval('SELECT CURRENT_DATE')
+    await conn.execute('UPDATE users SET daily_orders_count = daily_orders_count + 1, last_order_date = $2 WHERE user_id = $1', user_id, today)
+
+async def get_user_transactions(user_id, limit=10):
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT type, amount, description, created_at FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2', user_id, limit)
+    return [{"type": r['type'], "amount": r['amount'], "description": r['description'], "created_at": str(r['created_at'])} for r in rows]
+
+async def process_pending_orders(user_id: int):
+    pass
+
+async def process_referral_bonus(order_id: int, order_total: int):
+    pass
+
+
+async def release_order_slots(order: dict) -> None:
+    """Освобождает слоты из состава заказа."""
+    for item in order.get('cart') or []:
+        if item.get('date') and item.get('id'):
+            try:
+                await release_slot(item['id'], item['date'])
+            except Exception as e:
+                print(f"Ошибка освобождения слота {item}: {e}")
+
+
+async def refund_cancelled_order(order: dict) -> bool:
+    """Возврат на баланс и слотов при отмене оплаченного заказа."""
+    status = order.get('status')
+    order_id = order['id']
+    should_refund = False
+    if status in PAID_ORDER_STATUSES:
+        should_refund = True
+    elif status == 'ожидает оплаты':
+        conn = await get_connection()
+        debited = await conn.fetchval(
+            "SELECT 1 FROM transactions WHERE order_id = $1 AND type = 'списание' LIMIT 1",
+            order_id,
+        )
+        should_refund = bool(debited)
+    if not should_refund:
+        return False
+    await return_balance(
+        order['user_id'],
+        order['total'],
+        order_id,
+        f"Возврат за отмену заказа #{order_id}",
+    )
+    await release_order_slots(order)
+    return True
+
+# ---------- КАТЕГОРИИ ----------
+async def get_all_categories():
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT id, name, display_name FROM categories ORDER BY id')
+    return [{"id": r['id'], "name": r['name'], "display_name": r['display_name']} for r in rows]
+
+async def add_category(name, display_name):
+    conn = await get_connection()
+    await conn.execute('INSERT INTO categories (name, display_name) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING', name, display_name)
+
+async def delete_category(cat_id):
+    conn = await get_connection()
+    async with conn.transaction():
+        await conn.execute('UPDATE channels SET category_id = NULL WHERE category_id = $1', cat_id)
+        await conn.execute('DELETE FROM categories WHERE id = $1', cat_id)
+    await _load_channels_from_db()
+
+async def get_category_by_id(cat_id):
+    conn = await get_connection()
+    r = await conn.fetchrow('SELECT id, name, display_name FROM categories WHERE id = $1', cat_id)
+    return {"id": r['id'], "name": r['name'], "display_name": r['display_name']} if r else None
+
+# ---------- КАНАЛЫ ----------
+async def get_all_channels(category_id=None):
+    global _channels_dict
+    if not _channels_dict: await _load_channels_from_db()
+    if category_id is not None: return {k: v for k, v in _channels_dict.items() if v.get('category_id') == category_id}
+    return _channels_dict
+
+async def get_active_channels(category_id=None):
+    all_ch = await get_all_channels(category_id)
+    return {k: v for k, v in all_ch.items() if v.get('active', True)}
+
+async def get_channel(channel_id):
+    if not _channels_dict: await _load_channels_from_db()
+    return _channels_dict.get(str(channel_id))
+
+async def add_channel(ch_id, name, price, subscribers, url, desc="", category_id=None):
+    conn = await get_connection()
+    await conn.execute('''INSERT INTO channels (id, name, price, subscribers, url, description, category_id, active, created_at)
+                          VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW())
+                          ON CONFLICT (id) DO UPDATE SET name=$2, price=$3, subscribers=$4, url=$5, description=$6, category_id=$7''',
+                       ch_id, name, price, subscribers, url, desc, category_id)
+    _channels_dict[ch_id] = {"name": name, "price": price, "subscribers": subscribers, "url": url, "description": desc or "", "category_id": category_id, "active": True, "created_at": datetime.now()}
+
+async def update_channel(ch_id, name=None, price=None, subs=None, url=None, desc=None, category_id=None):
+    conn = await get_connection()
+    if name is not None:
+        await conn.execute('UPDATE channels SET name = $1 WHERE id = $2', name, ch_id)
+        if ch_id in _channels_dict: _channels_dict[ch_id]['name'] = name
+    if price is not None:
+        await conn.execute('UPDATE channels SET price = $1 WHERE id = $2', price, ch_id)
+        if ch_id in _channels_dict: _channels_dict[ch_id]['price'] = price
+    if subs is not None:
+        await conn.execute('UPDATE channels SET subscribers = $1 WHERE id = $2', subs, ch_id)
+        if ch_id in _channels_dict: _channels_dict[ch_id]['subscribers'] = subs
+    if url is not None:
+        await conn.execute('UPDATE channels SET url = $1 WHERE id = $2', url, ch_id)
+        if ch_id in _channels_dict: _channels_dict[ch_id]['url'] = url
+    if desc is not None:
+        await conn.execute('UPDATE channels SET description = $1 WHERE id = $2', desc, ch_id)
+        if ch_id in _channels_dict: _channels_dict[ch_id]['description'] = desc
+    if category_id is not None:
+        await conn.execute('UPDATE channels SET category_id = $1 WHERE id = $2', category_id, ch_id)
+        if ch_id in _channels_dict: _channels_dict[ch_id]['category_id'] = category_id
+
+async def toggle_channel_active(ch_id):
+    conn = await get_connection()
+    current = await conn.fetchval('SELECT active FROM channels WHERE id = $1', ch_id)
+    new_active = not current if current is not None else False
+    await conn.execute('UPDATE channels SET active = $1 WHERE id = $2', new_active, ch_id)
+    if ch_id in _channels_dict: _channels_dict[ch_id]['active'] = new_active
+    return new_active
+
+async def delete_channel(ch_id):
+    conn = await get_connection()
+    url = await conn.fetchval('SELECT url FROM channels WHERE id = $1', ch_id)
+    await conn.execute('DELETE FROM channels WHERE id = $1', ch_id)
+    if url:
+        await conn.execute("DELETE FROM seller_channels WHERE channel_url = $1", url)
+    if ch_id in _channels_dict:
+        del _channels_dict[ch_id]
+
+# ---------- ЗАКАЗЫ ----------
+async def save_order(user_id, username, cart, total, budget, contact, status='в обработке'):
+    conn = await get_connection()
+    async with conn.transaction():
+        cart_json = json.dumps(cart)
+        return await conn.fetchval('''INSERT INTO orders (user_id, username, cart, total, budget, contact, status)
+                                     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id''',
+                                  user_id, username, cart_json, total, budget, contact, status)
+
+async def get_orders(limit=20):
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT id, user_id, username, cart, total, budget, contact, status, created_at FROM orders ORDER BY created_at DESC LIMIT $1', limit)
+    return [{"id": r['id'], "user_id": r['user_id'], "username": r['username'], "cart": json.loads(r['cart']), "total": r['total'],
+             "budget": r['budget'], "contact": r['contact'], "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+
+async def get_orders_by_user(user_id, limit=5, only_completed=False):
+    conn = await get_connection()
+    if only_completed:
+        rows = await conn.fetch('SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 AND status IN ($2, $3) ORDER BY created_at DESC LIMIT $4',
+                                user_id, 'оплачена', 'выполнена', limit)
+    else:
+        rows = await conn.fetch('SELECT id, total, cart, status, created_at FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2', user_id, limit)
+    return [{"id": r['id'], "total": r['total'], "cart": json.loads(r['cart']), "status": r['status'], "created_at": str(r['created_at'])} for r in rows]
+
+async def update_order_status(order_id, new_status):
+    conn = await get_connection()
+    await conn.execute('UPDATE orders SET status = $1 WHERE id = $2', new_status, order_id)
+
+async def get_order_by_id(order_id):
+    conn = await get_connection()
+    r = await conn.fetchrow('SELECT id, user_id, username, total, status, cart FROM orders WHERE id = $1', order_id)
+    if r: return {"id": r['id'], "user_id": r['user_id'], "username": r['username'], "total": r['total'], "status": r['status'], "cart": json.loads(r['cart'])}
+    return None
+
+async def clear_non_successful_orders():
+    conn = await get_connection()
+    async with conn.transaction():
+        await conn.execute("DELETE FROM transactions WHERE order_id IN (SELECT id FROM orders WHERE status IN ('в обработке', 'отменена'))")
+        await conn.execute("DELETE FROM orders WHERE status IN ('в обработке', 'отменена')")
+
+async def clear_all_orders():
+    conn = await get_connection()
+    async with conn.transaction():
+        await conn.execute("DELETE FROM transactions WHERE order_id IS NOT NULL")
+        await conn.execute("DELETE FROM orders")
+
+# ---------- СТАТИСТИКА ----------
+async def get_top_channels(limit=10):
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT cart FROM orders WHERE status IN ($1, $2)', 'оплачена', 'выполнена')
+    channel_stats = {}
+    for r in rows:
+        try:
+            for item in json.loads(r['cart']):
+                cid = str(item.get('id'))
+                if cid not in channel_stats: channel_stats[cid] = {"orders": 0, "total": 0}
+                channel_stats[cid]["orders"] += 1
+                channel_stats[cid]["total"] += item.get('price', 0)
+        except: pass
+    sorted_ids = sorted(channel_stats, key=lambda x: channel_stats[x]['orders'], reverse=True)[:limit]
+    result = []
+    for cid in sorted_ids:
+        ch = _channels_dict.get(cid, {})
+        result.append({"name": ch.get('name', f'ID {cid}'), "orders": channel_stats[cid]['orders'], "total": channel_stats[cid]['total']})
+    return result
+
+async def get_top_buyers(limit=10):
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT user_id, username, SUM(total) as total_spent, COUNT(*) as order_count FROM orders WHERE status IN ($1, $2) GROUP BY user_id, username ORDER BY total_spent DESC LIMIT $3',
+                            'оплачена', 'выполнена', limit)
+    return [{"user_id": r['user_id'], "username": r['username'] or "Unknown", "total_spent": r['total_spent'], "order_count": r['order_count']} for r in rows]
+
+async def get_daily_revenue(days=7):
+    conn = await get_connection()
+    rows = await conn.fetch('''SELECT DATE(created_at) as day, COUNT(*) as orders, COALESCE(SUM(total),0) as revenue
+                               FROM orders WHERE status IN ('оплачена', 'выполнена') AND created_at >= CURRENT_DATE - $1::integer
+                               GROUP BY day ORDER BY day ASC''', days)
+    return [{"day": str(r['day']), "orders": r['orders'], "revenue": r['revenue']} for r in rows]
+
+# ---------- БЭКАП ----------
+async def backup_database(path: str = None):
+    conn = await get_connection()
+    backup = {}
+    for tbl in ['users', 'categories', 'channels', 'orders', 'transactions', 'seller_channels', 'carts']:
+        rows = await conn.fetch(f'SELECT * FROM {tbl}')
+        backup[tbl] = [dict(r) for r in rows]
+    if not path:
+        path = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(backup, f, ensure_ascii=False, indent=2, default=str)
+    return path
+
+# ---------- БИРЖА (seller_applications) ----------
+async def create_seller_application(user_id: int, username: str, channel_url: str, channel_name: str, price: int, description: str = '', category_id: int = None) -> int:
+    conn = await get_connection()
+    return await conn.fetchval('''INSERT INTO seller_channels (user_id, username, channel_url, channel_name, price, description, status, category_id)
+                                  VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7) RETURNING id''',
+                               user_id, username, channel_url, channel_name, price, description, category_id)
+
+async def get_seller_applications(status: str = 'pending') -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('''SELECT id, user_id, username, channel_url, channel_name, price, description, status, created_at, category_id
+                               FROM seller_channels WHERE status = $1 ORDER BY created_at DESC LIMIT 50''', status)
+    return [dict(r) for r in rows]
+
+async def get_seller_application_by_id(application_id: int) -> dict:
+    conn = await get_connection()
+    row = await conn.fetchrow(
+        '''SELECT id, user_id, username, channel_url, channel_name, price, description, status, created_at, category_id
+           FROM seller_channels WHERE id = $1''', application_id)
+    return dict(row) if row else None
+
+async def update_seller_application(app_id: int, price: int = None, description: str = None):
+    conn = await get_connection()
+    if price is not None:
+        await conn.execute("UPDATE seller_channels SET price = $1, updated_at = NOW() WHERE id = $2", price, app_id)
+    if description is not None:
+        await conn.execute("UPDATE seller_channels SET description = $1, updated_at = NOW() WHERE id = $2", description, app_id)
+
+async def approve_seller_application(application_id: int) -> bool:
+    conn = await get_connection()
+    result = await conn.execute("UPDATE seller_channels SET status = 'approved', updated_at = NOW() WHERE id = $1 AND status = 'pending'", application_id)
+    return result != "UPDATE 0"
+
+async def reject_seller_application(application_id: int) -> bool:
+    conn = await get_connection()
+    result = await conn.execute("UPDATE seller_channels SET status = 'rejected', updated_at = NOW() WHERE id = $1 AND status = 'pending'", application_id)
+    return result != "UPDATE 0"
+
+async def get_seller_channels(user_id: int) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at, category_id
+                               FROM seller_channels WHERE user_id = $1 ORDER BY created_at DESC''', user_id)
+    return [dict(r) for r in rows]
+
+async def get_approved_seller_channels(user_id: int) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('''SELECT id, channel_url, channel_name, price, description, status, created_at
+                               FROM seller_channels WHERE user_id = $1 AND status = 'approved' ORDER BY created_at DESC''', user_id)
+    return [dict(r) for r in rows]
+
+# ---------- КАЛЕНДАРЬ ----------
+async def set_slot(channel_id: str, seller_user_id: int, date_str, status: str = "free"):
+    from datetime import date as _date
+    if isinstance(date_str, str):
+        try: date_str = _date.fromisoformat(date_str)
+        except ValueError:
+            parts = date_str.split('-')
+            if len(parts) == 3 and len(parts[0]) == 2:
+                date_str = _date(int(parts[2]), int(parts[1]), int(parts[0]))
+    conn = await get_connection()
+    await conn.execute('''INSERT INTO slot_bookings (channel_id, seller_user_id, date, status)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (channel_id, date) DO UPDATE SET status = $4''',
+                        channel_id, seller_user_id, date_str, status)
+
+async def get_channel_slots(channel_id: str) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT date, status FROM slot_bookings WHERE channel_id = $1 ORDER BY date', channel_id)
+    return [{"date": str(r['date']), "status": r['status']} for r in rows]
+
+async def book_slot(channel_id: str, date_str: str, buyer_user_id: int):
+    from datetime import date as _date
+    if isinstance(date_str, str): date_str = _date.fromisoformat(date_str)
+    conn = await get_connection()
+    await conn.execute('''UPDATE slot_bookings SET status = 'booked', booked_by = $3
+                        WHERE channel_id = $1 AND date = $2 AND status = 'free' ''',
+                        channel_id, date_str, buyer_user_id)
+
+async def get_free_slots(channel_id: str) -> list:
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT date FROM slot_bookings WHERE channel_id = $1 AND status = $2 ORDER BY date',
+                            channel_id, 'free')
+    return [str(r['date']) for r in rows]
+
+async def delete_slot(channel_id: str, date_str):
+    from datetime import date as _date
+    if isinstance(date_str, str):
+        try: date_str = _date.fromisoformat(date_str)
+        except ValueError:
+            parts = date_str.split('-')
+            if len(parts) == 3 and len(parts[0]) == 2:
+                date_str = _date(int(parts[2]), int(parts[1]), int(parts[0]))
+    conn = await get_connection()
+    await conn.execute("DELETE FROM slot_bookings WHERE channel_id = $1 AND date = $2", channel_id, date_str)
+
+async def release_slot(channel_id: str, date_str):
+    from datetime import date as _date
+    if isinstance(date_str, str): date_str = _date.fromisoformat(date_str)
+    conn = await get_connection()
+    await conn.execute("UPDATE slot_bookings SET status = 'free', booked_by = NULL WHERE channel_id = $1 AND date = $2", channel_id, date_str)
+
+async def copy_slots_to_new_channel(old_channel_id: str, new_channel_id: str):
+    conn = await get_connection()
+    slots = await conn.fetch("SELECT * FROM slot_bookings WHERE channel_id = $1", old_channel_id)
+    for slot in slots:
+        await conn.execute(
+            "INSERT INTO slot_bookings (channel_id, seller_user_id, date, status, booked_by) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (channel_id, date) DO NOTHING",
+            new_channel_id, slot['seller_user_id'], slot['date'], slot['status'], slot['booked_by']
+        )
+
+async def cleanup_old_slots():
+    today = date.today()
+    cutoff = today - timedelta(days=2)
+    conn = await get_connection()
+    await conn.execute("DELETE FROM slot_bookings WHERE date < $1", cutoff)
+
+# ---------- АНАЛИТИКА ----------
+async def get_seller_channel_stats(channel_id: str, seller_user_id: int, days: int = 30):
+    conn = await get_connection()
+    rows = await conn.fetch('''
+        SELECT DATE(o.created_at) as day, COUNT(*) as orders, COALESCE(SUM(o.total),0) as revenue
+        FROM orders o
+        WHERE o.status IN ('оплачена','выполнена')
+          AND o.created_at >= CURRENT_DATE - $1::integer
+          AND o.cart::jsonb @> $2::jsonb
+        GROUP BY day ORDER BY day ASC
+    ''', days, json.dumps([{"id": channel_id}]))
+    return [{"day": str(r['day']), "orders": r['orders'], "revenue": r['revenue']} for r in rows]
+
+async def get_calendar_fill_rate(channel_id: str) -> float:
+    conn = await get_connection()
+    total = await conn.fetchval('SELECT COUNT(*) FROM slot_bookings WHERE channel_id = $1', channel_id)
+    if total == 0: return 0.0
+    booked = await conn.fetchval('SELECT COUNT(*) FROM slot_bookings WHERE channel_id = $1 AND status = $2', channel_id, 'booked')
+    return round(booked / total * 100, 1)
+
+async def get_order_stats():
+    conn = await get_connection()
+    row = await conn.fetchrow("SELECT COUNT(*) AS cnt, COALESCE(SUM(total),0) AS sum FROM orders")
+    total_orders = row['cnt']
+    total_sum = row['sum']
+    status_rows = await conn.fetch("SELECT status, COUNT(*) AS cnt FROM orders GROUP BY status")
+    status_counts = [{"status": r['status'], "count": r['cnt']} for r in status_rows]
+    return total_orders, total_sum, status_counts
+
+async def get_channel_count():
+    conn = await get_connection()
+    return await conn.fetchval("SELECT COUNT(*) FROM channels")
+
+async def get_weekly_orders(days=7):
+    conn = await get_connection()
+    rows = await conn.fetch(
+        "SELECT DATE(created_at) AS day, COUNT(*) AS cnt, SUM(total) AS sum "
+        "FROM orders WHERE created_at >= CURRENT_DATE - $1::integer "
+        "GROUP BY day ORDER BY day ASC", days
+    )
+    return [(r['day'], r['cnt'], r['sum']) for r in rows]
+
+async def get_catalog_channel_by_url(url: str):
+    global _channels_dict
+    if not _channels_dict: await _load_channels_from_db()
+    for cid, info in _channels_dict.items():
+        if info.get('url', '').strip().lower().rstrip('/') == url.strip().lower().rstrip('/'):
+            return {"id": cid, **info}
+    return None
+
+async def get_catalog_channel_id_by_url(url: str):
+    ch = await get_catalog_channel_by_url(url)
+    return ch['id'] if ch else None
+
+async def get_uncategorized_channels():
+    conn = await get_connection()
+    rows = await conn.fetch('SELECT id, name, price, subscribers, url, description, category_id, active FROM channels WHERE category_id IS NULL')
+    ch = {}
+    for r in rows:
+        ch[r['id']] = {
+            "name": r['name'] or "Без названия",
+            "price": r['price'] or 0,
+            "subscribers": r['subscribers'] or 0,
+            "url": r['url'] or "",
+            "description": r['description'] or "",
+            "category_id": None,
+            "active": r['active']
+        }
+    return ch

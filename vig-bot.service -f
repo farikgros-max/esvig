@@ -1,0 +1,9 @@
+[0;1;32m●[0m esvig-bot.service - ESVIG Telegram Bot
+     Loaded: loaded (]8;;file://farikgros.fvds.ru/etc/systemd/system/esvig-bot.service/etc/systemd/system/esvig-bot.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Wed 2026-05-13 14:16:52 CEST; 23min ago
+   Main PID: 55837 (python)
+      Tasks: 3 (limit: 2104)
+     Memory: 89.4M (peak: 89.7M)
+        CPU: 2.678s
+     CGroup: /system.slice/esvig-bot.service
+             └─[0;38;5;245m55837 /root/esvig/venv/bin/python /root/esvig/app.py[0m

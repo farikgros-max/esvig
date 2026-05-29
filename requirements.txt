@@ -1,0 +1,10 @@
+aiogram
+flask
+aiohttp
+gunicorn
+requests
+asyncpg
+apscheduler
+openpyxl
+pytest
+pytest-asyncio

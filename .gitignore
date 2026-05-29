@@ -1,0 +1,16 @@
+.env
+.env.*
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.log
+channels.db
+orders_export.xlsx
+admin_actions.log
+bot_errors.log
+*.xlsx
+app.py_*
+keyboards.py_*
+handlers/*.py_*

@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: esvig_user
+      POSTGRES_PASSWORD: Pikachylove16
+      POSTGRES_DB: esvig
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  bot:
+    build: .
+    restart: always
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://esvig_user:Pikachylove16@db:5432/esvig
+    ports:
+      - "8443:8443"
+
+volumes:
+  pgdata:
